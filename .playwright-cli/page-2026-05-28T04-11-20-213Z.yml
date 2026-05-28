@@ -1,0 +1,81 @@
+- generic [active] [ref=e1]:
+  - complementary [ref=e2]:
+    - generic [ref=e3]:
+      - img [ref=e4]
+      - text: Spectra
+    - navigation [ref=e13]:
+      - list [ref=e14]:
+        - listitem [ref=e15]:
+          - link "Tổng quan" [ref=e16] [cursor=pointer]:
+            - /url: /
+            - img [ref=e17]
+            - text: Tổng quan
+        - listitem [ref=e21]:
+          - link "Giao dịch" [ref=e22] [cursor=pointer]:
+            - /url: /transactions
+            - img [ref=e23]
+            - text: Giao dịch
+        - listitem [ref=e27]:
+          - link "Ngân sách" [ref=e28] [cursor=pointer]:
+            - /url: /budget
+            - img [ref=e29]
+            - text: Ngân sách
+        - listitem [ref=e32]:
+          - link "Xu hướng" [ref=e33] [cursor=pointer]:
+            - /url: /trends
+            - img [ref=e34]
+            - text: Xu hướng
+        - listitem [ref=e37]:
+          - link "Định kỳ" [ref=e38] [cursor=pointer]:
+            - /url: /subscriptions
+            - img [ref=e39]
+            - text: Định kỳ
+        - listitem [ref=e44]:
+          - link "Tải lên" [ref=e45] [cursor=pointer]:
+            - /url: /upload
+            - img [ref=e46]
+            - text: Tải lên
+        - listitem [ref=e49]:
+          - link "Cài đặt" [ref=e50] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e51]
+            - text: Cài đặt
+    - generic [ref=e54]: Tự lưu trữ · Dữ liệu nằm trên máy của bạn
+  - main [ref=e55]:
+    - generic [ref=e56]:
+      - generic [ref=e57]:
+        - generic [ref=e58]:
+          - heading "Tổng quan" [level=1] [ref=e59]
+          - paragraph [ref=e60]: Lỗi khi tải dữ liệu
+        - generic [ref=e61]:
+          - link "Tải lên" [ref=e62] [cursor=pointer]:
+            - /url: /upload
+          - link "Giao dịch" [ref=e63] [cursor=pointer]:
+            - /url: /transactions
+      - generic [ref=e64]:
+        - generic [ref=e65]: Kỳ
+        - combobox "Kỳ" [ref=e66] [cursor=pointer]:
+          - option "Chu kỳ hiện tại" [selected]
+          - option "90 ngày gần nhất"
+          - option "Từ đầu năm"
+      - generic [ref=e67]:
+        - generic [ref=e68]:
+          - generic [ref=e69]: Chi tiêu chu kỳ
+          - generic [ref=e70]: —
+        - generic [ref=e71]:
+          - generic [ref=e72]: Thu nhập chu kỳ
+          - generic [ref=e73]: —
+        - generic [ref=e74]:
+          - generic [ref=e75]: Định kỳ
+          - generic [ref=e76]: —
+        - generic [ref=e77]:
+          - generic [ref=e78]: Chưa phân loại
+          - generic [ref=e79]: —
+      - generic [ref=e80]:
+        - heading "Chi tiêu theo danh mục" [level=3] [ref=e82]
+        - heading "Xu hướng theo tháng" [level=3] [ref=e85]
+      - generic [ref=e88]:
+        - heading "Nơi chi nhiều nhất" [level=3] [ref=e89]
+        - list [ref=e90]:
+          - listitem [ref=e91]:
+            - paragraph [ref=e92]: Đang tải...

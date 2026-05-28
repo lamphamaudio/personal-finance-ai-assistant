@@ -1,0 +1,424 @@
+{% extends "base.html" %}
+{% block title %}Giao dịch — Personal Finance AI Assistant{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Giao dịch</h1>
+        <p class="page-subtitle" id="txSubtitle">Xem, tìm kiếm và chỉnh merchant hoặc danh mục ngay trong sổ giao dịch.</p>
+    </div>
+    <div class="page-header-actions">
+        <a href="/upload" class="btn btn-secondary btn-sm">Tải thêm</a>
+    </div>
+</div>
+
+<div class="table-container">
+    <div class="table-toolbar">
+        <input type="text" id="searchInput" placeholder="Tìm merchant..." style="flex:1; max-width: 260px;">
+        <select id="categoryFilter">
+            <option value="">Tất cả danh mục</option>
+        </select>
+        <input type="date" id="dateFrom" title="Từ ngày">
+        <input type="date" id="dateTo" title="Đến ngày">
+        <button class="btn btn-secondary btn-sm" type="button" onclick="resetTransactionFilters()">Xóa bộ lọc</button>
+        <button class="btn btn-secondary btn-sm" id="uncatToggleBtn" type="button" onclick="toggleUncategorizedQueue()">Duyệt chưa phân loại: TẮT</button>
+    </div>
+
+    <div class="results-summary" id="resultsSummary">
+        <div class="results-summary-badges">
+            <span class="settings-badge local" id="resultsCountBadge">Đang tải...</span>
+            <span class="settings-badge" id="resultsFilterBadge">Không có bộ lọc</span>
+            <span class="settings-badge warning" id="resultsModeBadge" style="display:none;">Inbox zero</span>
+        </div>
+        <div class="table-cell-muted" id="resultsSummaryText">Đang tải giao dịch...</div>
+    </div>
+
+    <div class="uncategorized-queue" id="uncatQueue" style="display:none;">
+        <div class="uncat-queue-info" id="uncatQueueInfo">Hàng đợi chưa phân loại</div>
+        <div class="uncat-queue-actions">
+            <button class="btn btn-secondary btn-sm" type="button" id="selectAllVisibleBtn" onclick="toggleSelectAllVisible()">Chọn tất cả đang hiển thị</button>
+            <select id="bulkCategorySelect" class="settings-select">
+                <option value="">Chọn danh mục...</option>
+            </select>
+            <button class="btn btn-primary btn-sm" type="button" onclick="applyBulkCategory()">Áp dụng cho mục đã chọn</button>
+        </div>
+    </div>
+
+    <div id="tableBody">
+        <div class="empty-state">
+            <div class="icon">📋</div>
+            <h3>Đang tải...</h3>
+        </div>
+    </div>
+
+    <div class="pagination" id="pagination"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let currentPage = 1;
+    let categories = [];
+    let uncategorizedOnly = false;
+
+    function themeVar(name, fallback = '') {
+        return window.SpectraTheme?.getCssVar(name, fallback) || fallback;
+    }
+
+    function categoryOptionsHtml(selected = '') {
+        return categories.map(cat => {
+            const isSelected = cat === selected ? 'selected' : '';
+            return `<option value="${cat}" ${isSelected}>${cat}</option>`;
+        }).join('');
+    }
+
+    async function loadCategories() {
+        const res = await fetch('/api/categories');
+        const data = await res.json();
+        categories = data.categories;
+
+        const select = document.getElementById('categoryFilter');
+        categories.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c;
+            opt.textContent = c;
+            select.appendChild(opt);
+        });
+
+        const bulkSelect = document.getElementById('bulkCategorySelect');
+        bulkSelect.innerHTML = '<option value="">Chọn danh mục...</option>' + categoryOptionsHtml();
+    }
+
+    async function loadTransactions(page = 1) {
+        await loadCurrency();
+        currentPage = page;
+        const filters = currentTransactionFilters();
+        const { search, category, dateFrom, dateTo } = filters;
+
+        const params = new URLSearchParams({ page, per_page: 50 });
+        if (search) params.set('search', search);
+        if (category && !uncategorizedOnly) params.set('category', category);
+        if (dateFrom) params.set('date_from', dateFrom);
+        if (dateTo) params.set('date_to', dateTo);
+        if (uncategorizedOnly) params.set('uncategorized_only', 'true');
+
+        const res = await fetch(`/api/transactions?${params}`);
+        const data = await res.json();
+
+        renderTable(data.transactions);
+        renderPagination(data.page, data.pages);
+        updateResultsSummary(data, filters);
+
+        const subtitle = document.getElementById('txSubtitle');
+        subtitle.textContent = uncategorizedOnly
+            ? `Chế độ duyệt chưa phân loại - ${data.total} giao dịch`
+            : 'Xem, tìm kiếm và chỉnh merchant hoặc danh mục ngay trong sổ giao dịch.';
+
+        const queue = document.getElementById('uncatQueue');
+        const queueInfo = document.getElementById('uncatQueueInfo');
+        queue.style.display = uncategorizedOnly ? 'flex' : 'none';
+        if (uncategorizedOnly) {
+            queueInfo.textContent = `${data.total} giao dịch chưa phân loại trong bộ lọc hiện tại`;
+        }
+    }
+
+    function currentTransactionFilters() {
+        return {
+            search: document.getElementById('searchInput').value.trim(),
+            category: document.getElementById('categoryFilter').value,
+            dateFrom: document.getElementById('dateFrom').value,
+            dateTo: document.getElementById('dateTo').value,
+            uncategorizedOnly,
+        };
+    }
+
+    function activeFilterCount(filters) {
+        let count = 0;
+        if (filters.search) count += 1;
+        if (filters.category && !filters.uncategorizedOnly) count += 1;
+        if (filters.dateFrom) count += 1;
+        if (filters.dateTo) count += 1;
+        return count;
+    }
+
+    function updateResultsSummary(data, filters) {
+        const countBadge = document.getElementById('resultsCountBadge');
+        const filterBadge = document.getElementById('resultsFilterBadge');
+        const modeBadge = document.getElementById('resultsModeBadge');
+        const summaryText = document.getElementById('resultsSummaryText');
+        if (!countBadge || !filterBadge || !modeBadge || !summaryText) {
+            return;
+        }
+
+        const total = Number(data.total || 0);
+        const filterCount = activeFilterCount(filters);
+        countBadge.textContent = `${total} result${total === 1 ? '' : 's'}`;
+        filterBadge.textContent = filterCount ? `${filterCount} filter${filterCount === 1 ? '' : 's'} active` : 'Không có bộ lọc';
+
+        if (filters.uncategorizedOnly) {
+            modeBadge.style.display = '';
+            summaryText.textContent = 'Only uncategorized transactions are shown so you can reach inbox zero faster.';
+        } else {
+            modeBadge.style.display = 'none';
+            summaryText.textContent = filterCount
+                ? 'Showing the transactions that match your current filters.'
+                : 'Click a merchant or category to edit it in place.';
+        }
+    }
+
+    function resetTransactionFilters() {
+        document.getElementById('searchInput').value = '';
+        document.getElementById('categoryFilter').value = '';
+        document.getElementById('dateFrom').value = '';
+        document.getElementById('dateTo').value = '';
+        uncategorizedOnly = false;
+        document.getElementById('uncatToggleBtn').textContent = 'Duyệt chưa phân loại: TẮT';
+        document.getElementById('categoryFilter').disabled = false;
+        loadTransactions(1);
+    }
+
+    function renderTable(txns) {
+        const container = document.getElementById('tableBody');
+
+        if (txns.length === 0) {
+            const filters = currentTransactionFilters();
+            const hasFilters = activeFilterCount(filters) > 0 || filters.uncategorizedOnly;
+            container.innerHTML = `
+            <div class="empty-state">
+                <div class="icon">📋</div>
+                <h3>${hasFilters ? 'No matching transactions' : 'No transactions found'}</h3>
+                <p>${hasFilters ? 'Try clearing filters or turning off inbox zero mode.' : 'Tải lên transactions to get started.'}</p>
+                ${hasFilters
+                    ? '<button class="btn btn-secondary" type="button" onclick="resetTransactionFilters()" style="margin-top:16px;">Clear filters</button>'
+                    : '<a href="/upload" class="btn btn-primary" style="margin-top:16px;">Tải giao dịch lên</a>'}
+            </div>`;
+            return;
+        }
+
+        let html = `<table>
+        <thead><tr>
+            <th style="width:40px">✓</th>
+            <th>Ngày</th>
+            <th>Nơi giao dịch</th>
+            <th>Danh mục</th>
+            <th style="text-align:right">Số tiền</th>
+        </tr></thead><tbody>`;
+
+        for (const t of txns) {
+            const isExpense = t.amount < 0;
+            const amountClass = isExpense ? 'expense' : 'income';
+            const isUncategorized = t.category === 'Chưa phân loại';
+            const badgeClass = isUncategorized ? 'badge badge-uncategorized' : 'badge';
+            const dotColor = isUncategorized ? '' : `background:${getCategoryColor(t.category)}`;
+            const checkbox = isUncategorized
+                ? `<input type="checkbox" class="uncategorized-check" value="${t.id}" aria-label="Select transaction">`
+                : '';
+            const quickCategorySelect = isUncategorized
+                ? `<div class="quick-category-wrap">
+                    <select class="quick-category-select" onchange="applyQuickCategory('${t.id}', this)">
+                        <option value="">Assign…</option>
+                        ${categoryOptionsHtml()}
+                    </select>
+                </div>`
+                : '';
+
+            html += `<tr>
+            <td>${checkbox}</td>
+            <td>${t.date}</td>
+            <td>
+                <span class="editable" onclick="editField(this, '${t.id}', 'merchant')">${t.merchant}</span>
+            </td>
+            <td>
+                <span class="${badgeClass}" onclick="editField(this, '${t.id}', 'category')">
+                    <span class="badge-dot" style="${dotColor}"></span>
+                    ${t.category}
+                </span>
+                ${quickCategorySelect}
+            </td>
+            <td class="amount ${amountClass}" style="text-align:right">${formatCurrency(t.amount)}</td>
+        </tr>`;
+        }
+
+        html += '</tbody></table>';
+        container.innerHTML = html;
+        container.querySelectorAll('.uncategorized-check').forEach(check => {
+            check.addEventListener('change', updateSelectAllButtonState);
+        });
+        updateSelectAllButtonState();
+    }
+
+    function renderPagination(page, total) {
+        const container = document.getElementById('pagination');
+        if (total <= 1) { container.innerHTML = ''; return; }
+
+        let html = `<button ${page <= 1 ? 'disabled' : ''} onclick="loadTransactions(${page - 1})">? Trước</button>`;
+        html += `<span class="pagination-info">Trang ${page} / ${total}</span>`;
+        html += `<button ${page >= total ? 'disabled' : ''} onclick="loadTransactions(${page + 1})">Sau →</button>`;
+        container.innerHTML = html;
+    }
+
+    function getCategoryColor(cat) {
+        const colors = {
+            'Đăng ký định kỳ': '#2EAADC', 'Ăn uống': '#D9730D',
+            'Di chuyển': '#448361', 'Mua sắm': '#9B51E0', 'Du lịch': '#337EA9',
+            'Sức khỏe': '#E16259', 'Sức khỏe': '#E16259',
+            'Bảo hiểm': '#6940A5', 'Điện nước': '#CC8E22',
+            'Lương': '#0F7B6C', 'Thu nhập': '#0F7B6C',
+            'Giải trí': '#AD1A72', 'Giáo dục': '#6C6C6C',
+            'Khác': '#D44C47', 'Tiền mặt': '#0F7B6C',
+            'Tiền mặt': '#E03E3E', 'Hoàn tiền': '#448361',
+            'Chuyển khoản': '#0F7B6C', 'Thu nhập': '#0F7B6C',
+        };
+        return colors[cat] || themeVar('--text-muted', '#787774');
+    }
+
+    function selectedUncategorizedIds() {
+        return Array.from(document.querySelectorAll('.uncategorized-check:checked')).map(el => el.value);
+    }
+
+    function updateSelectAllButtonState() {
+        const btn = document.getElementById('selectAllVisibleBtn');
+        if (!btn) {
+            return;
+        }
+
+        const allChecks = Array.from(document.querySelectorAll('.uncategorized-check'));
+        const checked = allChecks.filter(el => el.checked).length;
+        if (!allChecks.length) {
+            btn.textContent = 'Chọn tất cả đang hiển thị';
+            btn.disabled = true;
+            return;
+        }
+
+        btn.disabled = false;
+        btn.textContent = checked === allChecks.length ? 'Clear selection' : 'Chọn tất cả đang hiển thị';
+    }
+
+    function toggleSelectAllVisible() {
+        const allChecks = Array.from(document.querySelectorAll('.uncategorized-check'));
+        if (!allChecks.length) {
+            return;
+        }
+
+        const shouldSelectAll = allChecks.some(el => !el.checked);
+        allChecks.forEach(el => {
+            el.checked = shouldSelectAll;
+        });
+        updateSelectAllButtonState();
+    }
+
+    async function applyBulkCategory() {
+        const ids = selectedUncategorizedIds();
+        const category = document.getElementById('bulkCategorySelect').value;
+        if (!ids.length) {
+            showToast('Select at least one uncategorized transaction', 'info');
+            return;
+        }
+        if (!category) {
+            showToast('Choose a category first', 'error');
+            return;
+        }
+
+        const res = await fetch('/api/transactions/bulk-category', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids, category }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+            showToast(data.error || 'Bulk update failed', 'error');
+            return;
+        }
+
+        showToast(`Updated ${data.updated} transaction(s)`);
+        loadTransactions(currentPage);
+    }
+
+    async function applyQuickCategory(txId, selectEl) {
+        const category = selectEl.value;
+        if (!category) {
+            return;
+        }
+
+        const res = await fetch(`/api/transactions/${txId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ category }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+            showToast(data.error || 'Cập nhật danh mục thất bại', 'error');
+            return;
+        }
+
+        showToast('Đã cập nhật danh mục');
+        loadTransactions(currentPage);
+    }
+
+    function toggleUncategorizedQueue() {
+        uncategorizedOnly = !uncategorizedOnly;
+        document.getElementById('uncatToggleBtn').textContent = `Inbox zero: ${uncategorizedOnly ? 'ON' : 'OFF'}`;
+        document.getElementById('categoryFilter').disabled = uncategorizedOnly;
+        loadTransactions(1);
+    }
+
+    function editField(el, txId, field) {
+        const current = el.textContent.trim();
+        const input = document.createElement('input');
+        input.className = 'edit-input';
+        input.value = current;
+        el.replaceWith(input);
+        input.focus();
+        input.select();
+
+        async function save() {
+            const newVal = input.value.trim();
+            if (newVal && newVal !== current) {
+                const body = {};
+                body[field] = newVal;
+                await fetch(`/api/transactions/${txId}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                showToast(`${field === 'category' ? 'Danh mục' : 'Nơi giao dịch'} updated`);
+            }
+            loadTransactions(currentPage);
+        }
+
+        input.addEventListener('blur', save);
+        input.addEventListener('keydown', e => {
+            if (e.key === 'Enter') save();
+            if (e.key === 'Escape') loadTransactions(currentPage);
+        });
+    }
+
+    // Debounced search
+    let searchTimeout;
+    document.getElementById('searchInput').addEventListener('input', () => {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => loadTransactions(1), 300);
+    });
+    document.getElementById('categoryFilter').addEventListener('change', () => loadTransactions(1));
+    document.getElementById('dateFrom').addEventListener('change', () => loadTransactions(1));
+    document.getElementById('dateTo').addEventListener('change', () => loadTransactions(1));
+
+    window.addEventListener('spectra-theme-change', () => {
+        loadTransactions(currentPage);
+    });
+
+    loadCategories();
+    loadTransactions();
+</script>
+{% endblock %}
+
+
+
+
+
+
+
+
+
+
+

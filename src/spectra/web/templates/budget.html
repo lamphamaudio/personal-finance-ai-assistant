@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}Ngân sách — Personal Finance AI Assistant{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Ngân sách</h1>
+<p class="page-subtitle" id="budgetSubtitle">Hạn mức chi tiêu hàng tháng</p>
+
+<!-- Summary bar -->
+<div class="cards" id="budgetSummary">
+    <div class="card">
+        <div class="card-label">Trong hạn mức</div>
+        <div class="card-value positive" id="statOnTrack">—</div>
+    </div>
+    <div class="card">
+        <div class="card-label">Vượt ngân sách</div>
+        <div class="card-value negative" id="statOver">—</div>
+    </div>
+    <div class="card">
+        <div class="card-label">Chưa đặt hạn mức</div>
+        <div class="card-value neutral" id="statNoLimit">—</div>
+    </div>
+</div>
+
+<!-- Ngân sách cards grid -->
+<div class="budget-grid" id="budgetGrid">
+    <div class="empty-state">
+        <div class="icon">⏳</div>
+        <h3>Đang tải...</h3>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    async function loadBudget() {
+        await loadCurrency();
+        const res = await fetch('/api/budget');
+        const data = await res.json();
+
+        document.getElementById('budgetSubtitle').textContent = data.current_cycle?.label || 'Chu kỳ tài chính hiện tại';
+
+        // Summary cards
+        document.getElementById('statOnTrack').textContent = data.summary.on_track;
+        document.getElementById('statOver').textContent = data.summary.over;
+        document.getElementById('statNoLimit').textContent = data.summary.no_limit;
+
+        const grid = document.getElementById('budgetGrid');
+
+        if (!data.items.length) {
+            grid.innerHTML = `<div class="empty-state">
+                <div class="icon">💰</div>
+                <h3>No spending data yet</h3>
+                <p>Tải lên a CSV to see your categories here</p>
+                <a href="/upload" class="btn btn-primary" style="margin-top:16px;">ðŸ“¤ Tải giao dịch lên</a>
+            </div>`;
+            return;
+        }
+
+        grid.innerHTML = data.items.map((item, i) => {
+            const statusIcons = { green: '🟢', yellow: '🟡', red: '🔴', none: '⚪' };
+            const icon = statusIcons[item.status];
+            const pctDisplay = item.pct !== null ? `${item.pct}%` : '—';
+            const barPct = item.pct !== null ? Math.min(item.pct, 100) : 0;
+
+            return `
+            <div class="budget-card" style="animation-delay: ${i * 0.05}s">
+                <div class="budget-card-header">
+                    <span class="budget-category">${item.category}</span>
+                    <span class="budget-status-icon">${icon}</span>
+                </div>
+                <div class="budget-amounts">
+                    <span class="budget-spent status-${item.status}">
+                        ${formatCurrency(item.spent)}
+                    </span>
+                    <span class="budget-sep"> / </span>
+                    <span class="budget-limit-display" onclick="editLimit(this, '${item.category}', ${item.limit || ''})"
+                          title="Click to set limit">
+                        ${item.limit ? formatCurrency(item.limit) : 'Đặt hạn mức'}
+                    </span>
+                </div>
+                <div class="progress-track">
+                    <div class="progress-fill status-${item.status}"
+                         style="width: 0%; --target-width: ${barPct}%"
+                         data-pct="${barPct}">
+                    </div>
+                </div>
+                <div class="budget-pct">${pctDisplay}</div>
+            </div>`;
+        }).join('');
+
+        // Animate progress bars after paint
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                document.querySelectorAll('.progress-fill').forEach(el => {
+                    el.style.width = el.dataset.pct + '%';
+                });
+            });
+        });
+    }
+
+    function editLimit(el, category, current) {
+        const parent = el.parentElement;
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.className = 'edit-input';
+        input.placeholder = 'e.g. 300';
+        input.value = current || '';
+        input.style.width = '100px';
+        el.replaceWith(input);
+        input.focus();
+
+        async function save() {
+            const val = parseFloat(input.value);
+            if (!isNaN(val) && val >= 0) {
+                await fetch(`/api/budget/${encodeURIComponent(category)}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ limit: val }),
+                });
+                showToast(`Ngân sách cho ${category} đã đặt thành ${formatCurrency(val)}`);
+            }
+            loadBudget();
+        }
+
+        input.addEventListener('blur', save);
+        input.addEventListener('keydown', e => {
+            if (e.key === 'Enter') save();
+            if (e.key === 'Escape') loadBudget();
+        });
+    }
+
+    loadBudget();
+</script>
+{% endblock %}
+
+
+
+
+
+
+
+
+
+

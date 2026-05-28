@@ -1,0 +1,302 @@
+{% extends "base.html" %}
+{% block title %}Xu hướng — Personal Finance AI Assistant{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Xu hướng</h1>
+<p class="page-subtitle">Year-over-year financial overview by financial cycle</p>
+
+<!-- Year tabs -->
+<div class="year-tabs" id="yearTabs"></div>
+
+<!-- Year stat cards -->
+<div class="cards" id="yearCards">
+    <div class="card">
+        <div class="card-label">Dòng tiền ròng</div>
+        <div class="card-value" id="statNet">—</div>
+    </div>
+    <div class="card">
+        <div class="card-label">Savings Rate</div>
+        <div class="card-value neutral" id="statSavings">—</div>
+    </div>
+    <div class="card">
+        <div class="card-label">Tổng thu nhập</div>
+        <div class="card-value positive" id="statIncome">—</div>
+    </div>
+    <div class="card">
+        <div class="card-label">Tổng chi tiêu</div>
+        <div class="card-value negative" id="statExpenses">—</div>
+    </div>
+</div>
+
+<!-- Charts row -->
+<div class="charts-row">
+    <div class="chart-box" style="grid-column: 1 / -1;">
+        <h3>Thu nhập và chi tiêu ? Hàng tháng</h3>
+        <canvas id="monthlyChart" height="160"></canvas>
+    </div>
+</div>
+
+<div class="charts-row">
+    <div class="chart-box" style="grid-column: 1 / -1;">
+        <h3>Top Spending Categories</h3>
+        <canvas id="categoryChart" height="200"></canvas>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let trendsData = null;
+    let selectedYear = null;
+    let monthlyChart = null;
+    let categoryChart = null;
+
+    function cssVar(name, fallback = '') {
+        return window.SpectraTheme?.getCssVar(name, fallback) || fallback;
+    }
+
+    function alphaColor(color, alpha) {
+        if (!color) {
+            return color;
+        }
+
+        if (color.startsWith('#')) {
+            let hex = color.slice(1);
+            if (hex.length === 3) {
+                hex = hex.split('').map(char => char + char).join('');
+            }
+
+            const red = parseInt(hex.slice(0, 2), 16);
+            const green = parseInt(hex.slice(2, 4), 16);
+            const blue = parseInt(hex.slice(4, 6), 16);
+            return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+        }
+
+        const match = color.match(/rgba?\(([^)]+)\)/);
+        if (!match) {
+            return color;
+        }
+
+        const channels = match[1].split(',').slice(0, 3).map(value => value.trim());
+        return `rgba(${channels.join(', ')}, ${alpha})`;
+    }
+
+    function getTrendTheme() {
+        return {
+            fontFamily: cssVar('--font', 'Inter, sans-serif'),
+            mutedColor: cssVar('--text-muted', '#787774'),
+            gridColor: cssVar('--chart-grid', '#F1F1EF'),
+            incomeFill: alphaColor(cssVar('--positive', '#0F7B6C'), 0.75),
+            expenseFill: alphaColor(cssVar('--negative', '#E03E3E'), 0.75),
+            palette: [
+                cssVar('--accent', '#2EAADC'),
+                cssVar('--positive', '#0F7B6C'),
+                cssVar('--warning', '#D9730D'),
+                cssVar('--negative', '#E03E3E'),
+                cssVar('--purple', '#9B51E0'),
+                '#6940A5', '#AD1A72', '#E16259', '#CC8E22', '#448361',
+            ],
+        };
+    }
+
+    function formatPeriodTick(periodStart) {
+        return formatSpectraDate(periodStart, { day: 'numeric', month: 'short' });
+    }
+
+    async function loadTrends() {
+        await loadCurrency();
+        const res = await fetch('/api/trends');
+        trendsData = await res.json();
+
+        if (!trendsData.years.length) {
+            document.getElementById('yearTabs').innerHTML = '';
+            document.getElementById('yearCards').innerHTML = `
+                <div class="empty-state" style="grid-column:1/-1">
+                    <div class="icon">📈</div>
+                    <h3>Chưa có dữ liệu</h3>
+                    <p>Tải lên bank exports to see trends over time</p>
+                    <a href="/upload" class="btn btn-primary" style="margin-top:16px;">ðŸ“¤ Tải giao dịch lên</a>
+                </div>`;
+            return;
+        }
+
+        renderYearTabs();
+        selectYear(trendsData.years[trendsData.years.length - 1]);
+    }
+
+    function renderYearTabs() {
+        const tabs = document.getElementById('yearTabs');
+        tabs.innerHTML = trendsData.years.map(y => `
+            <button class="year-tab" id="tab-${y}" onclick="selectYear('${y}')">${y}</button>
+        `).join('');
+    }
+
+    function selectYear(year) {
+        selectedYear = year;
+
+        // Update tab active state
+        document.querySelectorAll('.year-tab').forEach(t => t.classList.remove('active'));
+        const activeTab = document.getElementById(`tab-${year}`);
+        if (activeTab) activeTab.classList.add('active');
+
+        const d = trendsData.by_year[year];
+        if (!d) return;
+
+        // Stat cards
+        const netEl = document.getElementById('statNet');
+        netEl.textContent = formatCurrency(d.net);
+        netEl.className = `card-value ${d.net >= 0 ? 'positive' : 'negative'}`;
+        document.getElementById('statSavings').textContent = `${d.savings_rate}%`;
+        document.getElementById('statIncome').textContent = formatCurrency(d.income);
+        document.getElementById('statExpenses').textContent = formatCurrency(d.expenses);
+
+        renderMonthlyChart(year);
+        renderCategoryChart(year);
+    }
+
+    function renderMonthlyChart(year) {
+        const theme = getTrendTheme();
+        const series = trendsData.period_series.filter(m => m.period_start.startsWith(year));
+        const labels = series.map(m => formatPeriodTick(m.period_start));
+
+        if (monthlyChart) monthlyChart.destroy();
+        monthlyChart = new Chart(document.getElementById('monthlyChart'), {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [
+                    {
+                        label: 'Income',
+                        data: series.map(m => m.income),
+                        backgroundColor: theme.incomeFill,
+                        borderRadius: 6,
+                        borderSkipped: false,
+                    },
+                    {
+                        label: 'Expenses',
+                        data: series.map(m => m.expenses),
+                        backgroundColor: theme.expenseFill,
+                        borderRadius: 6,
+                        borderSkipped: false,
+                    },
+                ],
+            },
+            options: {
+                responsive: true,
+                animation: { duration: 600, easing: 'easeOutQuart' },
+                plugins: {
+                    legend: {
+                        labels: {
+                            color: theme.mutedColor,
+                            font: { family: theme.fontFamily, size: 12 },
+                            usePointStyle: true,
+                        },
+                    },
+                    tooltip: {
+                        callbacks: {
+                            title: ctx => formatCycleRange(series[ctx[0].dataIndex].period_start, series[ctx[0].dataIndex].period_end),
+                            label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw)}`
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            color: theme.mutedColor,
+                            font: { family: theme.fontFamily, size: 11 },
+                            callback: v => '€' + v.toLocaleString('it-IT'),
+                        },
+                        grid: { color: theme.gridColor },
+                    },
+                    x: {
+                        ticks: {
+                            color: theme.mutedColor,
+                            font: { family: theme.fontFamily, size: 11 },
+                        },
+                        grid: { display: false },
+                    },
+                },
+            },
+        });
+    }
+
+    function renderCategoryChart(year) {
+        const theme = getTrendTheme();
+        const cats = trendsData.by_year[year]?.by_category || {};
+        const labels = Object.keys(cats);
+        const values = Object.values(cats);
+
+        if (categoryChart) categoryChart.destroy();
+
+        if (!labels.length) {
+            document.getElementById('categoryChart').parentElement.style.display = 'none';
+            return;
+        }
+        document.getElementById('categoryChart').parentElement.style.display = '';
+
+        categoryChart = new Chart(document.getElementById('categoryChart'), {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [{
+                    label: 'Spending',
+                    data: values,
+                    backgroundColor: theme.palette.slice(0, labels.length),
+                    borderRadius: 6,
+                    borderSkipped: false,
+                }],
+            },
+            options: {
+                indexAxis: 'y',
+                responsive: true,
+                animation: { duration: 700, easing: 'easeOutQuart' },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: { label: ctx => formatCurrency(ctx.raw) }
+                    }
+                },
+                scales: {
+                    x: {
+                        beginAtZero: true,
+                        ticks: {
+                            color: theme.mutedColor,
+                            font: { family: theme.fontFamily, size: 11 },
+                            callback: v => '€' + v.toLocaleString('it-IT'),
+                        },
+                        grid: { color: theme.gridColor },
+                    },
+                    y: {
+                        ticks: {
+                            color: theme.mutedColor,
+                            font: { family: theme.fontFamily, size: 12 },
+                        },
+                        grid: { display: false },
+                    },
+                },
+            },
+        });
+    }
+
+    window.addEventListener('spectra-theme-change', () => {
+        if (trendsData && selectedYear) {
+            renderMonthlyChart(selectedYear);
+            renderCategoryChart(selectedYear);
+        }
+    });
+
+    loadTrends();
+</script>
+{% endblock %}
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,415 @@
+{% extends "base.html" %}
+{% block title %}Tổng quan — Personal Finance AI Assistant{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Tổng quan</h1>
+        <p class="page-subtitle" id="subtitle">Đang tải...</p>
+    </div>
+    <div class="page-header-actions">
+        <a href="/upload" class="btn btn-secondary btn-sm">Tải lên</a>
+        <a href="/transactions" class="btn btn-secondary btn-sm">Giao dịch</a>
+    </div>
+</div>
+<div class="dashboard-controls">
+    <label for="summaryScope" class="dashboard-controls-label">Kỳ</label>
+    <select id="summaryScope" class="settings-select dashboard-scope-select">
+        <option value="cycle">Chu kỳ hiện tại</option>
+        <option value="90d">90 ngày gần nhất</option>
+        <option value="ytd">Từ đầu năm</option>
+    </select>
+</div>
+
+<div class="cards" id="cards">
+    <div class="card">
+        <div class="card-label" id="spentLabel">Chi tiêu chu kỳ</div>
+        <div class="card-value negative" id="totalSpent">—</div>
+    </div>
+    <div class="card">
+        <div class="card-label" id="incomeLabel">Thu nhập chu kỳ</div>
+        <div class="card-value positive" id="totalIncome">—</div>
+    </div>
+    <div class="card">
+        <div class="card-label">Định kỳ</div>
+        <div class="card-value neutral" id="subscriptions">—</div>
+    </div>
+    <div class="card">
+        <div class="card-label">Chưa phân loại</div>
+        <div class="card-value warning" id="uncategorized">—</div>
+    </div>
+</div>
+
+<div class="burn-rate" id="burnRateBox" style="display:none;">
+    <div class="burn-rate-label">Dự báo chu kỳ</div>
+    <div class="burn-rate-main" id="burnRateMain">—</div>
+    <div class="burn-rate-meta" id="burnRateMeta">—</div>
+</div>
+
+<div class="insights-panel" id="insightsPanel" style="display:none;">
+    <div class="insights-panel-header">
+        <h3>Tín hiệu cần chú ý</h3>
+        <span class="table-cell-muted">Những thay đổi và mục nên xem lại</span>
+    </div>
+    <div class="insights-list" id="insightsList"></div>
+</div>
+
+<div class="charts-row">
+    <div class="chart-box">
+        <h3>Chi tiêu theo danh mục</h3>
+        <canvas id="categoryChart" height="260"></canvas>
+    </div>
+    <div class="chart-box">
+        <h3>Xu hướng theo tháng</h3>
+        <canvas id="monthlyChart" height="260"></canvas>
+    </div>
+</div>
+
+<div class="charts-row">
+    <div class="chart-box">
+        <h3>Nơi chi nhiều nhất</h3>
+        <ul class="merchant-list" id="topMerchants">
+            <li class="empty-state">
+                <p>Đang tải...</p>
+            </li>
+        </ul>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let catChart, monthChart;
+    let dashboardData = null;
+    const DASHBOARD_SCOPE_STORAGE_KEY = 'spectra-summary-scope';
+    const VALID_SUMMARY_SCOPES = ['cycle', '90d', 'ytd'];
+
+    function normalizeScope(value) {
+        return VALID_SUMMARY_SCOPES.includes(value) ? value : 'cycle';
+    }
+
+    function getScope() {
+        try {
+            return normalizeScope(localStorage.getItem(DASHBOARD_SCOPE_STORAGE_KEY));
+        } catch (_err) {
+            return 'cycle';
+        }
+    }
+
+    function setScope(scope) {
+        const normalized = normalizeScope(scope);
+        try {
+            localStorage.setItem(DASHBOARD_SCOPE_STORAGE_KEY, normalized);
+        } catch (_err) {
+            // Ignore storage errors.
+        }
+        return normalized;
+    }
+
+    function updateScopeUI(scope) {
+        const scopeSelect = document.getElementById('summaryScope');
+        if (scopeSelect) {
+            scopeSelect.value = scope;
+        }
+
+        const spentLabel = document.getElementById('spentLabel');
+        const incomeLabel = document.getElementById('incomeLabel');
+        if (scope === 'cycle') {
+            spentLabel.textContent = 'Chi tiêu chu kỳ';
+            incomeLabel.textContent = 'Thu nhập chu kỳ';
+        } else if (scope === '90d') {
+            spentLabel.textContent = 'Chi tiêu 90 ngày';
+            incomeLabel.textContent = 'Thu nhập 90 ngày';
+        } else {
+            spentLabel.textContent = 'Chi tiêu từ đầu năm';
+            incomeLabel.textContent = 'Thu nhập từ đầu năm';
+        }
+    }
+
+    function cssVar(name, fallback = '') {
+        const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+        return value || fallback;
+    }
+
+    function getChartTheme() {
+        return {
+            fontFamily: cssVar('--font', 'Inter, sans-serif'),
+            textColor: cssVar('--text', '#111827'),
+            mutedColor: cssVar('--text-muted', '#6B7280'),
+            gridColor: cssVar('--chart-grid', '#F1F5F9'),
+            accent: cssVar('--accent', '#4F46E5'),
+            palette: [
+                cssVar('--accent', '#4F46E5'),       // indigo
+                cssVar('--positive', '#059669'),      // emerald
+                cssVar('--warning', '#D97706'),       // amber
+                cssVar('--negative', '#DC2626'),      // red
+                cssVar('--purple', '#7C3AED'),        // violet
+                '#0EA5E9',  // sky blue
+                '#DB2777',  // pink
+                '#EA580C',  // orange
+                '#65A30D',  // lime
+                '#0891B2',  // cyan
+                '#9333EA',  // purple
+                '#B45309',  // yellow-brown
+                '#BE123C',  // rose
+                '#4B5563',  // slate
+            ],
+        };
+    }
+
+    function renderCharts(data) {
+        const theme = getChartTheme();
+
+        const catLabels = Object.keys(data.by_category);
+        const catValues = Object.values(data.by_category);
+
+        if (catChart) catChart.destroy();
+        catChart = new Chart(document.getElementById('categoryChart'), {
+            type: 'doughnut',
+            data: {
+                labels: catLabels,
+                datasets: [{
+                    data: catValues,
+                    backgroundColor: theme.palette.slice(0, catLabels.length),
+                    borderWidth: 2,
+                    borderColor: getComputedStyle(document.documentElement).getPropertyValue('--bg-elevated').trim() || '#fff',
+                    hoverOffset: 8,
+                    hoverBorderWidth: 0,
+                    spacing: 2,
+                }],
+            },
+            options: {
+                responsive: true,
+                animation: { duration: 600, easing: 'easeOutQuart' },
+                plugins: {
+                    legend: {
+                        position: 'right',
+                        labels: {
+                            color: theme.mutedColor,
+                            font: { family: theme.fontFamily, size: 12, weight: '500' },
+                            padding: 14,
+                            usePointStyle: true,
+                            pointStyleWidth: 8,
+                        },
+                    },
+                    tooltip: {
+                        backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--bg-elevated').trim(),
+                        titleColor: theme.textColor,
+                        bodyColor: theme.mutedColor,
+                        borderColor: getComputedStyle(document.documentElement).getPropertyValue('--border').trim(),
+                        borderWidth: 1,
+                        padding: 12,
+                        cornerRadius: 8,
+                        callbacks: {
+                            label: ctx => {
+                                const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                                const pct = total > 0 ? Math.round(ctx.parsed / total * 100) : 0;
+                                return ` ${formatCurrency(ctx.parsed)} (${pct}%)`;
+                            },
+                        },
+                    },
+                },
+                cutout: '70%',
+            },
+        });
+
+        const periodKeys = Object.keys(data.monthly);
+        const monthLabels = periodKeys.map(startDate => {
+            if (data.scope === 'cycle') {
+                return formatSpectraDate(startDate, { day: 'numeric', month: 'short' });
+            }
+            return formatSpectraDate(startDate, { month: 'short', year: '2-digit' });
+        });
+        const monthValues = Object.values(data.monthly);
+
+        if (monthChart) monthChart.destroy();
+        monthChart = new Chart(document.getElementById('monthlyChart'), {
+            type: 'bar',
+            data: {
+                labels: monthLabels,
+                datasets: [{
+                    label: 'Chi tiêu',
+                    data: monthValues,
+                    backgroundColor: theme.palette.map(c => c + 'CC'),
+                    backgroundColor: theme.accent + 'CC',
+                    hoverBackgroundColor: theme.accent,
+                    borderRadius: 8,
+                    borderSkipped: false,
+                    borderWidth: 0,
+                }],
+            },
+            options: {
+                responsive: true,
+                animation: { duration: 500, easing: 'easeOutCubic' },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--bg-elevated').trim(),
+                        titleColor: theme.textColor,
+                        bodyColor: theme.mutedColor,
+                        borderColor: getComputedStyle(document.documentElement).getPropertyValue('--border').trim(),
+                        borderWidth: 1,
+                        padding: 12,
+                        cornerRadius: 8,
+                        callbacks: {
+                            title: context => {
+                                const key = periodKeys[context[0].dataIndex];
+                                const range = data.monthly_ranges?.[key];
+                                if (!range) {
+                                    return monthLabels[context[0].dataIndex];
+                                }
+                                return formatCycleRange(range.start, range.end, { day: 'numeric', month: 'short', year: 'numeric' });
+                            },
+                            label: ctx => ` ${formatCurrency(ctx.parsed.y)}`,
+                        },
+                    },
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            color: theme.mutedColor,
+                            font: { family: theme.fontFamily, size: 11, weight: '500' },
+                            callback: v => formatCurrency(v),
+                        },
+                        grid: { color: theme.gridColor, lineWidth: 1 },
+                        border: { display: false },
+                    },
+                    x: {
+                        ticks: {
+                            color: theme.mutedColor,
+                            font: { family: theme.fontFamily, size: 11 },
+                            maxRotation: 0,
+                        },
+                        grid: { display: false },
+                        border: { display: false },
+                    },
+                },
+            },
+        });
+    }
+
+    function renderBurnRate(data) {
+        const box = document.getElementById('burnRateBox');
+        const main = document.getElementById('burnRateMain');
+        const meta = document.getElementById('burnRateMeta');
+        if (!box || !main || !meta) {
+            return;
+        }
+
+        if (data.scope !== 'cycle' || !data.burn_rate || !data.has_data) {
+            box.style.display = 'none';
+            return;
+        }
+
+        const burn = data.burn_rate;
+        box.style.display = 'block';
+        main.textContent = `${formatCurrency(burn.projected_total)} dự kiến khi hết chu kỳ`;
+        meta.textContent = `${formatCurrency(burn.daily_spend)}/ngày ? ${burn.elapsed_days}/${burn.total_days} ngày đã qua ? ${burn.remaining_days} ngày còn lại`;
+    }
+
+    function renderInsights(data) {
+        const panel = document.getElementById('insightsPanel');
+        const list = document.getElementById('insightsList');
+        if (!panel || !list) {
+            return;
+        }
+
+        const insights = Array.isArray(data.insights) ? data.insights : [];
+        if (!insights.length) {
+            panel.style.display = 'none';
+            list.innerHTML = '';
+            return;
+        }
+
+        panel.style.display = 'block';
+        list.innerHTML = insights.map(item => `
+            <a class="insight-card insight-${item.severity || 'info'}" href="${item.href || '#'}">
+                <div class="insight-title">${item.title}</div>
+                <div class="insight-detail">${item.detail}</div>
+            </a>
+        `).join('');
+    }
+
+    async function loadDashboard(scope = getScope()) {
+        try {
+            await loadCurrency();
+            const normalizedScope = normalizeScope(scope);
+            updateScopeUI(normalizedScope);
+
+            const res = await fetch(`/api/summary?scope=${encodeURIComponent(normalizedScope)}`);
+            const data = await res.json();
+            dashboardData = data;
+
+            // Cards
+            document.getElementById('totalSpent').textContent = formatCurrency(data.total_spent);
+            document.getElementById('totalIncome').textContent = formatCurrency(data.total_income);
+            document.getElementById('subscriptions').textContent = formatCurrency(data.subscriptions);
+            const uncategorizedValue = Number.isInteger(data.uncategorized_total)
+                ? data.uncategorized_total
+                : data.uncategorized;
+            document.getElementById('uncategorized').textContent = uncategorizedValue;
+
+            document.getElementById('subtitle').textContent = data.scope_label || data.current_cycle?.label || 'Kỳ đã chọn';
+            renderBurnRate(data);
+            renderInsights(data);
+
+            if (!data.has_data) {
+                document.getElementById('subtitle').textContent = 'Chưa có dữ liệu';
+                if (!document.getElementById('dashboardEmptyState')) {
+                    document.getElementById('cards').insertAdjacentHTML('afterend',
+                        `<div class="empty-state" id="dashboardEmptyState" style="margin:-16px 0 24px;">
+                            <div class="icon">📊</div>
+                            <h3>Bảng tổng quan đang trống</h3>
+                            <p>Tải file sao kê ngân hàng để xem phân tích chi tiêu</p>
+                            <a href="/upload" class="btn btn-primary" style="margin-top:16px;">ðŸ“¤ Tải giao dịch lên</a>
+                        </div>`);
+                }
+            }
+
+            renderCharts(data);
+
+            // Top merchants
+            const merchantList = document.getElementById('topMerchants');
+            if (data.top_merchants.length === 0) {
+                merchantList.innerHTML = '<li class="empty-state"><p>Chưa có chi tiêu trong kỳ này</p></li>';
+            } else {
+                merchantList.innerHTML = data.top_merchants.map((m, i) => `
+                <li class="merchant-item">
+                    <span class="merchant-rank">${i + 1}</span>
+                    <span class="merchant-name">${m.name}</span>
+                    <span class="merchant-amount">${formatCurrency(m.total)}</span>
+                </li>
+            `).join('');
+            }
+        } catch (err) {
+            console.error('Tổng quan load error:', err);
+            document.getElementById('subtitle').textContent = 'Lỗi khi tải dữ liệu';
+        }
+    }
+
+    window.addEventListener('spectra-theme-change', () => {
+        if (dashboardData) {
+            renderCharts(dashboardData);
+        }
+    });
+
+    document.getElementById('summaryScope')?.addEventListener('change', event => {
+        const scope = setScope(event.target.value);
+        loadDashboard(scope);
+    });
+
+    loadDashboard();
+</script>
+{% endblock %}
+
+
+
+
+
+
+
+
+
+
+

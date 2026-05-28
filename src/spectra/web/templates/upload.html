@@ -1,0 +1,519 @@
+{% extends "base.html" %}
+{% block title %}Tải lên — Personal Finance AI Assistant{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Tải lên</h1>
+        <p class="page-subtitle">Import a CSV, PDF, or OFX export, review the suggestions, then save only what looks right.</p>
+    </div>
+    <div class="page-header-actions">
+        <a href="/transactions" class="btn btn-secondary btn-sm">Giao dịch</a>
+        <a href="/settings" class="btn btn-secondary btn-sm">Cài đặt</a>
+    </div>
+</div>
+
+<section class="workflow-steps" aria-label="Tải lên workflow">
+    <article class="workflow-step">
+        <span class="workflow-step-number">1</span>
+        <div>
+            <h3>Drop a file</h3>
+            <p>CSV, PDF, or OFX exports all work here.</p>
+        </div>
+    </article>
+    <article class="workflow-step">
+        <span class="workflow-step-number">2</span>
+        <div>
+            <h3>Review suggestions</h3>
+            <p>Fix merchants and categories before they enter your history.</p>
+        </div>
+    </article>
+    <article class="workflow-step">
+        <span class="workflow-step-number">3</span>
+        <div>
+            <h3>Lưu with confidence</h3>
+            <p>Teach Spectra while you save, so the next import needs less work.</p>
+        </div>
+    </article>
+</section>
+
+<div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+        stroke-linecap="round" stroke-linejoin="round" style="opacity:.4;margin-bottom:12px;">
+        <polyline points="16 16 12 12 8 16" />
+        <line x1="12" y1="12" x2="12" y2="21" />
+        <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
+    </svg>
+    <h3>Drop your bank export here</h3>
+    <p>Supported files: CSV, PDF, and OFX</p>
+    <input type="file" id="fileInput" accept=".csv,.pdf,.ofx">
+</div>
+
+<!-- Real progress UI (hidden until upload starts) -->
+<div id="processing" class="processing-inline-card" style="display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;">
+        <span id="stepLabel" style="font-size:13px; font-weight:500; color:var(--text-muted);">Tải lêning...</span>
+        <span id="pctLabel"
+            style="font-size:13px; font-weight:600; font-variant-numeric:tabular-nums; color:var(--accent);">0%</span>
+    </div>
+    <div style="height:6px; background:var(--bg-subtle); border-radius:99px; overflow:hidden;">
+        <div id="progressFill"
+            style="height:100%; width:0%; background:var(--accent); border-radius:99px; transition:width 0.25s ease;">
+        </div>
+    </div>
+</div>
+
+<div class="preview-section" id="previewSection">
+    <div class="preview-toolbar">
+        <div>
+            <h2 style="font-size:18px; font-weight:600;" id="previewTitle">Review before import</h2>
+            <div class="preview-meta" id="previewMeta">
+                <span class="settings-badge local" id="previewCountBadge">0 rows</span>
+                <span class="settings-badge warning" id="previewNeedsReviewBadge" style="display:none;">0 need review</span>
+                <span class="settings-badge" id="previewLearningBadge">0 learning</span>
+            </div>
+        </div>
+        <div class="page-header-actions">
+            <button class="btn btn-secondary" type="button" onclick="cancelPreview()">Cancel</button>
+            <button class="btn btn-success" id="confirmBtn" onclick="confirmImport()"
+                style="display:flex; align-items:center; gap:6px;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                </svg>
+                Confirm &amp; Lưu
+            </button>
+        </div>
+    </div>
+
+    <div class="inline-banner" id="previewReviewNote">
+        <strong>Review mode</strong>
+        <span>Edit merchants and categories inline. Use “Apply to similar” to propagate the current fix in this batch. Keep “Learn” on when the correction should improve future imports too.</span>
+    </div>
+
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Ngày</th>
+                    <th>Nơi giao dịch</th>
+                    <th>Danh mục</th>
+                    <th>Recurring</th>
+                    <th>Learn</th>
+                    <th style="text-align:right">Số tiền</th>
+                    <th style="text-align:right">Action</th>
+                </tr>
+            </thead>
+            <tbody id="previewBody"></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let previewData = [];
+    let previewCategories = [];
+
+    const zone = document.getElementById('uploadZone');
+    const fileInput = document.getElementById('fileInput');
+
+    function escapeHtml(value) {
+        return String(value ?? '')
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll("'", '&#39;');
+    }
+
+    function normalizePreviewText(value) {
+        return String(value || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, ' ')
+            .trim();
+    }
+
+    async function loadPreviewCategories() {
+        try {
+            const res = await fetch('/api/categories/options');
+            const data = await res.json();
+            previewCategories = Array.isArray(data.categories) ? data.categories : [];
+            if (previewData.length) {
+                renderPreviewRows();
+            }
+        } catch (_err) {
+            previewCategories = [];
+        }
+    }
+
+    function categoryOptionsHtml(selected) {
+        const merged = ['Chưa phân loại', ...previewCategories];
+        if (selected && !merged.includes(selected)) {
+            merged.push(selected);
+        }
+
+        return merged
+            .filter((value, index, self) => value && self.indexOf(value) === index)
+            .map(category => `<option value="${escapeHtml(category)}" ${category === selected ? 'selected' : ''}>${escapeHtml(category)}</option>`)
+            .join('');
+    }
+
+    function updatePreviewField(index, field, value) {
+        if (!previewData[index]) {
+            return;
+        }
+        previewData[index][field] = value;
+        if (field === 'category') {
+            previewData[index].needs_review = value === 'Chưa phân loại';
+            renderPreviewRows();
+        }
+    }
+
+    function togglePreviewLearning(index, checked) {
+        if (!previewData[index]) {
+            return;
+        }
+        previewData[index].apply_to_future = Boolean(checked);
+    }
+
+    function applyToSimilar(index) {
+        const source = previewData[index];
+        if (!source) {
+            return;
+        }
+
+        const originalKey = normalizePreviewText(source.original_description || source.merchant);
+        const merchantKey = normalizePreviewText(source.merchant).split(' ').filter(token => token.length >= 3)[0] || normalizePreviewText(source.merchant);
+        let updated = 0;
+
+        previewData = previewData.map(item => {
+            const itemOriginal = normalizePreviewText(item.original_description || item.merchant);
+            const itemMerchant = normalizePreviewText(item.merchant);
+            const isSimilar = itemOriginal === originalKey
+                || (merchantKey && itemOriginal.includes(merchantKey))
+                || (merchantKey && itemMerchant.includes(merchantKey));
+
+            if (!isSimilar) {
+                return item;
+            }
+
+            updated += 1;
+            return {
+                ...item,
+                merchant: source.merchant,
+                category: source.category,
+                apply_to_future: source.apply_to_future,
+            };
+        });
+
+        renderPreviewRows();
+        showToast(`Applied review changes to ${updated} similar row(s)`);
+    }
+
+    function applyCategorySuggestion(index, category) {
+        if (!previewData[index] || !category) {
+            return;
+        }
+        updatePreviewField(index, 'category', category);
+    }
+
+    function classificationSourceLabel(source) {
+        switch (source) {
+            case 'hybrid':
+                return 'Keyword fallback';
+            case 'fallback':
+                return 'Needs review';
+            case 'ml':
+                return 'ML';
+            case 'fuzzy':
+                return 'Similar merchant';
+            case 'exact':
+                return 'Nơi giao dịch memory';
+            default:
+                return 'Review';
+        }
+    }
+
+    function confidenceLabel(score) {
+        if (typeof score !== 'number' || Number.isNaN(score)) {
+            return '';
+        }
+        return `${Math.round(score * 100)}%`;
+    }
+
+    function renderReviewAssist(index, txn) {
+        if (!txn?.needs_review) {
+            return '';
+        }
+
+        const sourceLabel = classificationSourceLabel(txn.classification_source);
+        const scoreLabel = confidenceLabel(txn.category_confidence);
+        const suggestions = Array.isArray(txn.category_suggestions)
+            ? txn.category_suggestions.filter(item => item && item.category && item.category !== txn.category).slice(0, 3)
+            : [];
+
+        const suggestionsHtml = suggestions.length
+            ? `<div class="preview-suggestions">${suggestions.map(item => `
+                <button class="btn btn-secondary btn-sm preview-suggestion-btn" type="button" onclick='applyCategorySuggestion(${index}, ${JSON.stringify(String(item.category))})'>
+                    ${escapeHtml(item.category)}${item.score != null ? ` · ${Math.round(Number(item.score) * 100)}%` : ''}
+                </button>
+            `).join('')}</div>`
+            : '';
+
+        return `
+            <div class="preview-review-block">
+                <span class="settings-badge warning">${escapeHtml(sourceLabel)}${scoreLabel ? ` · ${escapeHtml(scoreLabel)}` : ''}</span>
+                ${suggestionsHtml}
+            </div>
+        `;
+    }
+
+    function updatePreviewSummary() {
+        const countBadge = document.getElementById('previewCountBadge');
+        const reviewBadge = document.getElementById('previewNeedsReviewBadge');
+        const learningBadge = document.getElementById('previewLearningBadge');
+        if (!countBadge || !reviewBadge || !learningBadge) {
+            return;
+        }
+
+        const total = previewData.length;
+        const needsReview = previewData.filter(item => item.needs_review).length;
+        const learningCount = previewData.filter(item => item.apply_to_future !== false).length;
+
+        countBadge.textContent = `${total} row${total === 1 ? '' : 's'}`;
+        learningBadge.textContent = `${learningCount} learning`;
+
+        if (needsReview > 0) {
+            reviewBadge.style.display = '';
+            reviewBadge.textContent = `${needsReview} need review`;
+        } else {
+            reviewBadge.style.display = 'none';
+        }
+    }
+
+    // Drag & drop
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+    zone.addEventListener('drop', e => {
+        e.preventDefault();
+        zone.classList.remove('drag-over');
+        if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+    });
+
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files.length) uploadFile(fileInput.files[0]);
+    });
+
+    function setProgress(pct, step) {
+        document.getElementById('progressFill').style.width = pct + '%';
+        document.getElementById('pctLabel').textContent = pct + '%';
+        document.getElementById('stepLabel').textContent = step;
+    }
+
+    async function uploadFile(file) {
+        zone.style.display = 'none';
+        const proc = document.getElementById('processing');
+        proc.style.display = 'block';
+        setProgress(0, 'Connecting...');
+
+        const form = new FormData();
+        form.append('file', file);
+
+        try {
+            const res = await fetch('/api/upload', { method: 'POST', body: form });
+
+            if (!res.ok || !res.body) {
+                throw new Error(`Server error ${res.status}`);
+            }
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                // SSE events are separated by \n\n
+                const parts = buffer.split('\n\n');
+                buffer = parts.pop(); // keep incomplete trailing chunk
+
+                for (const part of parts) {
+                    const dataLine = part.split('\n').find(l => l.startsWith('data: '));
+                    if (!dataLine) continue;
+
+                    let event;
+                    try { event = JSON.parse(dataLine.slice(6)); } catch { continue; }
+
+                    if (event.error) {
+                        proc.style.display = 'none';
+                        zone.style.display = '';
+                        showToast('Error: ' + event.step, 'error');
+                        return;
+                    }
+
+                    setProgress(event.pct, event.step);
+
+                    if (event.done) {
+                        proc.style.display = 'none';
+                        if (!event.transactions || event.transactions.length === 0) {
+                            showToast(event.message || 'All transactions already imported', 'error');
+                            zone.style.display = '';
+                            return;
+                        }
+                        previewData = event.transactions.map(item => ({
+                            ...item,
+                            apply_to_future: item.apply_to_future !== false,
+                        }));
+                        showPreview(previewData, event.message);
+                    }
+                }
+            }
+
+        } catch (err) {
+            document.getElementById('processing').style.display = 'none';
+            zone.style.display = '';
+            showToast('Tải lên failed: ' + err.message, 'error');
+        }
+    }
+
+    function showPreview(txns, message) {
+        document.getElementById('previewTitle').textContent = message || `${txns.length} transactions`;
+        renderPreviewRows();
+        updatePreviewSummary();
+        document.getElementById('previewSection').classList.add('visible');
+    }
+
+    /**
+     * Handles the change event for a "recurring" dropdown in a table.
+     * If the user selects the "Other" option, this function replaces the
+     * dropdown with a text input to allow for a custom value.
+     *
+     * @param {number} index - The index of the transaction row in the preview data array.
+     * @param {HTMLSelectElement} select - The <select> element that triggered the event.
+     */
+    function checkRecurringCustom(index, select) {
+        if (select.value === '__other__') {
+            const td = select.parentElement;
+            td.innerHTML = '';
+            const input = document.createElement('input');
+            input.className = 'settings-input preview-input';
+            input.placeholder = 'Tùy chỉnh name...';
+            input.onkeydown = (e) => {
+                if (e.key === 'Enter') {
+                    if (input.value.trim()) updatePreviewField(index, 'recurring', input.value.trim());
+                    renderPreviewRows();
+                }
+            };
+            input.onblur = () => renderPreviewRows();
+            td.appendChild(input);
+            input.focus();
+        } else {
+            updatePreviewField(index, 'recurring', select.value);
+            if (select.value === '') renderPreviewRows();
+        }
+    }
+
+    function renderPreviewRows() {
+        const body = document.getElementById('previewBody');
+        body.innerHTML = previewData.map((t, index) => {
+            const cls = t.amount < 0 ? 'expense' : 'income';
+
+            let recurringHtml;
+            if (!t.recurring) {
+                recurringHtml = `<div class="table-cell-muted" style="padding:6px 10px;">—</div>`;
+            } else {
+                const opts = ['Đăng ký định kỳ', 'Thu nhập định kỳ'];
+                if (!opts.includes(t.recurring)) opts.push(t.recurring);
+                const optionsHtml = opts.map(o =>
+                    `<option value="${escapeHtml(o)}" ${o === t.recurring ? 'selected' : ''}>${escapeHtml(o)}</option>`
+                ).join('');
+                recurringHtml = `
+                    <select class="settings-select preview-select" onchange="checkRecurringCustom(${index}, this)" aria-label="Recurring">
+                        <option value="">Không định kỳ</option>
+                        ${optionsHtml}
+                        <option value="__other__">Khác...</option>
+                    </select>`;
+            }
+
+            return `<tr>
+            <td>${escapeHtml(t.date)}</td>
+            <td>
+                <input
+                    class="settings-input preview-input"
+                    value="${escapeHtml(t.merchant)}"
+                    oninput="updatePreviewField(${index}, 'merchant', this.value)"
+                    aria-label="Nơi giao dịch"
+                >
+                <div class="table-cell-muted preview-raw">${escapeHtml(t.original_description || '—')}</div>
+            </td>
+            <td>
+                <select class="settings-select preview-select" onchange="updatePreviewField(${index}, 'category', this.value)" aria-label="Danh mục">
+                    ${categoryOptionsHtml(t.category)}
+                </select>
+                ${renderReviewAssist(index, t)}
+            </td>
+            <td>
+                ${recurringHtml}
+            </td>
+            <td>
+                <label class="mini-checkbox">
+                    <input type="checkbox" ${t.apply_to_future ? 'checked' : ''} onchange="togglePreviewLearning(${index}, this.checked)">
+                    <span>Learn</span>
+                </label>
+            </td>
+            <td class="amount ${cls}" style="text-align:right">${formatCurrency(t.amount, t.currency)}</td>
+            <td style="text-align:right; white-space:nowrap;">
+                <button class="btn btn-secondary btn-sm" type="button" onclick="applyToSimilar(${index})">Apply to similar</button>
+            </td>
+        </tr>`;
+        }).join('');
+        updatePreviewSummary();
+    }
+
+    function cancelPreview() {
+        document.getElementById('previewSection').classList.remove('visible');
+        document.getElementById('uploadZone').style.display = '';
+        previewData = [];
+        fileInput.value = '';
+        updatePreviewSummary();
+    }
+
+    async function confirmImport() {
+        const btn = document.getElementById('confirmBtn');
+        btn.disabled = true;
+        btn.textContent = 'Saving...';
+
+        try {
+            const res = await fetch('/api/confirm', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ transactions: previewData }),
+            });
+            const data = await res.json();
+            showToast(data.message || 'Đã lưu giao dịch!');
+
+            setTimeout(() => { window.location.href = '/transactions'; }, 1500);
+        } catch (err) {
+            showToast('Lưu failed: ' + err.message, 'error');
+            btn.disabled = false;
+            btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Confirm & Lưu`;
+        }
+    }
+
+    loadPreviewCategories();
+</script>
+{% endblock %}
+
+
+
+
+
+
+
+
+
+
+

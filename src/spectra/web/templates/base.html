@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="vi" data-theme="{{ 'dark' if theme_preference == 'dark' else 'light' }}" data-theme-preference="{{ theme_preference|default('auto') }}">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description"
+        content="Personal Finance AI Assistant - Bảng điều khiển tài chính cá nhân. Phân loại, trực quan hóa và theo dõi chi tiêu.">
+    <title>{% block title %}Personal Finance AI Assistant{% endblock %}</title>
+    <link rel="icon"
+        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 36 30'%3E%3Cpolygon points='16 1 1 29 31 29' fill='%23D8E8F0' stroke='%23A8BCC8' stroke-width='0.8'/%3E%3Cline x1='0' y1='17' x2='10' y2='14.5' stroke='%23BCC8D4' stroke-width='2' stroke-linecap='round'/%3E%3Cline x1='22' y1='10' x2='36' y2='5' stroke='%23E03E3E' stroke-width='2' stroke-linecap='round'/%3E%3Cline x1='22' y1='12' x2='36' y2='9' stroke='%23FF7F27' stroke-width='2' stroke-linecap='round'/%3E%3Cline x1='22' y1='14' x2='36' y2='13' stroke='%23F0C040' stroke-width='2' stroke-linecap='round'/%3E%3Cline x1='22' y1='16' x2='36' y2='17' stroke='%230F7B6C' stroke-width='2' stroke-linecap='round'/%3E%3Cline x1='22' y1='18' x2='36' y2='21' stroke='%232EAADC' stroke-width='2' stroke-linecap='round'/%3E%3Cline x1='22' y1='20' x2='36' y2='25' stroke='%239B51E0' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+    <script>
+        const SERVER_THEME_PREFERENCE = {{ theme_preference|default('auto')|tojson }};
+        const THEME_STORAGE_KEY = 'spectra-theme-preference';
+        const THEME_OPTIONS = ['auto', 'light', 'dark'];
+
+        function safeReadStoredThemePreference() {
+            try {
+                const value = localStorage.getItem(THEME_STORAGE_KEY);
+                return THEME_OPTIONS.includes(value) ? value : null;
+            } catch (_err) {
+                return null;
+            }
+        }
+
+        function safeStoreThemePreference(preference) {
+            try {
+                localStorage.setItem(THEME_STORAGE_KEY, preference);
+            } catch (_err) {
+                // Ignore storage failures (private mode, disabled storage, etc.)
+            }
+        }
+
+        function getThemePreference() {
+            if (window.__spectraTheme?.preference && THEME_OPTIONS.includes(window.__spectraTheme.preference)) {
+                return window.__spectraTheme.preference;
+            }
+
+            const stored = safeReadStoredThemePreference();
+            if (stored) {
+                return stored;
+            }
+
+            return THEME_OPTIONS.includes(SERVER_THEME_PREFERENCE) ? SERVER_THEME_PREFERENCE : 'auto';
+        }
+
+        function getSystemTheme() {
+            return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+
+        function resolveTheme(preference = getThemePreference()) {
+            return preference === 'auto' ? getSystemTheme() : preference;
+        }
+
+        function applyTheme(preference = getThemePreference()) {
+            const effectiveTheme = resolveTheme(preference);
+            document.documentElement.dataset.theme = effectiveTheme;
+            document.documentElement.dataset.themePreference = preference;
+            window.__spectraTheme = { preference, effectiveTheme };
+            return window.__spectraTheme;
+        }
+
+        applyTheme(getThemePreference());
+    </script>
+    <link rel="stylesheet" href="/static/styles.css?v=20260515b">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+
+<body>
+    <button class="menu-toggle" id="menuToggle" onclick="toggleSidebar()">☰</button>
+
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-brand">
+            <svg class="brand-icon" width="28" height="24" viewBox="0 0 36 30" fill="none">
+                <!-- Prism body -->
+                <polygon points="16 1 1 29 31 29" fill="#D8E8F0" stroke="#A8BCC8" stroke-width="0.8" />
+                <!-- Incoming white beam -->
+                <line x1="0" y1="17" x2="10" y2="14.5" stroke="#BCC8D4" stroke-width="2" stroke-linecap="round" />
+                <!-- Outgoing spectrum — fanned out -->
+                <line x1="22" y1="10" x2="36" y2="5" stroke="#E03E3E" stroke-width="2" stroke-linecap="round" />
+                <line x1="22" y1="12" x2="36" y2="9" stroke="#FF7F27" stroke-width="2" stroke-linecap="round" />
+                <line x1="22" y1="14" x2="36" y2="13" stroke="#F0C040" stroke-width="2" stroke-linecap="round" />
+                <line x1="22" y1="16" x2="36" y2="17" stroke="#0F7B6C" stroke-width="2" stroke-linecap="round" />
+                <line x1="22" y1="18" x2="36" y2="21" stroke="#2EAADC" stroke-width="2" stroke-linecap="round" />
+                <line x1="22" y1="20" x2="36" y2="25" stroke="#9B51E0" stroke-width="2" stroke-linecap="round" />
+            </svg>
+            Personal Finance AI Assistant
+        </div>
+        <nav>
+            <ul class="sidebar-nav">
+                <li><a href="/" class="{% if request.url.path == '/' %}active{% endif %}">
+                        <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="12" width="4" height="9" rx="1" />
+                            <rect x="10" y="7" width="4" height="14" rx="1" />
+                            <rect x="17" y="3" width="4" height="18" rx="1" />
+                        </svg>
+                        Tổng quan
+                    </a></li>
+                <li><a href="/transactions" class="{% if request.url.path == '/transactions' %}active{% endif %}">
+                        <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="8" y1="6" x2="21" y2="6" />
+                            <line x1="8" y1="12" x2="21" y2="12" />
+                            <line x1="8" y1="18" x2="21" y2="18" />
+                            <circle cx="4" cy="6" r="1" />
+                            <circle cx="4" cy="12" r="1" />
+                            <circle cx="4" cy="18" r="1" />
+                        </svg>
+                        Giao dịch
+                    </a></li>
+                <li><a href="/budget" class="{% if request.url.path == '/budget' %}active{% endif %}">
+                        <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="2" y="4" width="20" height="16" rx="2" />
+                            <line x1="2" y1="10" x2="22" y2="10" />
+                            <circle cx="16" cy="15" r="2" />
+                        </svg>
+                        Ngân sách
+                    </a></li>
+                <li><a href="/trends" class="{% if request.url.path == '/trends' %}active{% endif %}">
+                        <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
+                            <polyline points="16 7 22 7 22 13" />
+                        </svg>
+                        Xu hướng
+                    </a></li>
+                <li><a href="/subscriptions" class="{% if request.url.path == '/subscriptions' %}active{% endif %}">
+                        <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M17 1l4 4-4 4" />
+                            <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+                            <path d="M7 23l-4-4 4-4" />
+                            <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+                        </svg>
+                        Định kỳ
+                    </a></li>
+                <li><a href="/upload" class="{% if request.url.path == '/upload' %}active{% endif %}">
+                        <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="16 16 12 12 8 16" />
+                            <line x1="12" y1="12" x2="12" y2="21" />
+                            <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
+                        </svg>
+                        Tải lên
+                    </a></li>
+                <li><a href="/settings" class="{% if request.url.path == '/settings' %}active{% endif %}">
+                        <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="3" />
+                            <path
+                                d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                        </svg>
+                        Cài đặt
+                    </a></li>
+            </ul>
+        </nav>
+        <div class="sidebar-footer">
+            Tự lưu trữ · Dữ liệu nằm trên máy của bạn
+        </div>
+    </aside>
+
+    <main class="main">
+        <div class="main-inner">
+            {% block content %}{% endblock %}
+        </div>
+    </main>
+
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script>
+        let defaultCurrency = null; // initially §null§ and will be populated when needed using `loadCurrency`
+        // Promise<string|undefined>
+        async function loadCurrency() {
+            if (!defaultCurrency) {
+                const response = await fetch('/api/settings');
+                defaultCurrency = (await response.json())['currency'];
+            }
+            return defaultCurrency;
+        }
+
+        const themeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+        function emitThemeChange(detail) {
+            window.dispatchEvent(new CustomEvent('spectra-theme-change', { detail }));
+        }
+
+        function syncThemeSelects() {
+            const preference = getThemePreference();
+            document.querySelectorAll('[data-theme-select]').forEach(select => {
+                if (select.value !== preference) {
+                    select.value = preference;
+                }
+            });
+        }
+
+        function setThemePreference(preference) {
+            const normalized = THEME_OPTIONS.includes(preference) ? preference : 'auto';
+            const detail = applyTheme(normalized);
+            safeStoreThemePreference(normalized);
+            syncThemeSelects();
+            emitThemeChange(detail);
+            return detail;
+        }
+
+        const handleSystemThemeChange = () => {
+            if (getThemePreference() !== 'auto') {
+                return;
+            }
+
+            const detail = applyTheme('auto');
+            syncThemeSelects();
+            emitThemeChange(detail);
+        };
+
+        if (typeof themeMediaQuery.addEventListener === 'function') {
+            themeMediaQuery.addEventListener('change', handleSystemThemeChange);
+        } else if (typeof themeMediaQuery.addListener === 'function') {
+            themeMediaQuery.addListener(handleSystemThemeChange);
+        }
+
+        window.SpectraTheme = {
+            getPreference: getThemePreference,
+            getEffectiveTheme: () => resolveTheme(getThemePreference()),
+            getState: () => window.__spectraTheme || applyTheme(getThemePreference()),
+            setPreference: setThemePreference,
+            getCssVar: (name, fallback = '') => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback,
+            syncThemeSelects,
+        };
+
+        syncThemeSelects();
+
+        function parseSpectraDate(dateString) {
+            return new Date(`${dateString}T00:00:00`);
+        }
+
+        function formatSpectraDate(dateString, options = { day: 'numeric', month: 'short', year: 'numeric' }) {
+            return parseSpectraDate(dateString).toLocaleDateString('vi-VN', options);
+        }
+
+        function formatCycleRange(startDate, endExclusiveDate, options = { day: 'numeric', month: 'short', year: 'numeric' }) {
+            const endDate = parseSpectraDate(endExclusiveDate);
+            endDate.setDate(endDate.getDate() - 1);
+            return `${parseSpectraDate(startDate).toLocaleDateString('vi-VN', options)} -> ${endDate.toLocaleDateString('vi-VN', options)}`;
+        }
+
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            const icons = { success: '✓', error: '×', info: 'i' };
+            toast.className = `toast toast-${type}`;
+            toast.innerHTML = `<span>${icons[type] || ''}</span> ${message}`;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateX(24px)';
+                toast.style.transition = '0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 4000);
+        }
+
+        function formatCurrency(amount, currency = undefined) {
+            const options = { style: 'currency', currency: currency || defaultCurrency };
+            return new Intl.NumberFormat('vi-VN', options).format(amount);
+        }
+
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('open');
+        }
+
+        // Close sidebar on outside click (mobile)
+        document.addEventListener('click', e => {
+            const sidebar = document.getElementById('sidebar');
+            const toggle = document.getElementById('menuToggle');
+            if (window.innerWidth <= 768 && sidebar.classList.contains('open')
+                && !sidebar.contains(e.target) && !toggle.contains(e.target)) {
+                sidebar.classList.remove('open');
+            }
+        });
+    </script>
+
+    {% block scripts %}{% endblock %}
+</body>
+
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
