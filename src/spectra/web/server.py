@@ -233,7 +233,7 @@ def _requires_base_currency_setup(db: BookmarkDB, settings: Settings | None = No
         return False
     if settings and _normalize_currency_code(settings.base_currency):
         return False
-    tx_count_row = db._conn.execute("SELECT COUNT(*) FROM tx_history").fetchone()
+    tx_count_row = db._conn.execute("SELECT COUNT(*) FROM app_tx_history").fetchone()
     tx_count = int(tx_count_row[0] if tx_count_row else 0)
     return tx_count == 0
 
@@ -323,7 +323,7 @@ def _simulate_rule_impact(
     rows = db._conn.execute(
         """
         SELECT tx_id, date, clean_name, original_description, category
-        FROM tx_history
+        FROM app_tx_history
         ORDER BY date DESC, tx_id DESC
         """
     ).fetchall()
@@ -624,7 +624,7 @@ def api_summary(scope: str = Query("cycle")):
 
     with _get_db() as db:
         rows = db._conn.execute(
-            "SELECT date, clean_name, amount, category FROM tx_history ORDER BY date DESC"
+            "SELECT date, clean_name, amount, category FROM app_tx_history ORDER BY date DESC"
         ).fetchall()
         budget_limits = db.get_budget_limits()
 
@@ -781,7 +781,7 @@ def api_transactions(
 
     with _get_db() as db:
         # Count total matching rows
-        count_query = f"SELECT COUNT(*) FROM tx_history{where_sql}"
+        count_query = f"SELECT COUNT(*) FROM app_tx_history{where_sql}"
         count_row = db._conn.execute(count_query, params).fetchone()
         total = int(count_row[0] if count_row else 0)
 
@@ -804,12 +804,12 @@ def api_transactions(
             uncat_params.append(date_to)
 
         uncat_where_sql = " WHERE " + " AND ".join(uncat_where_clauses)
-        uncat_count_query = f"SELECT COUNT(*) FROM tx_history{uncat_where_sql}"
+        uncat_count_query = f"SELECT COUNT(*) FROM app_tx_history{uncat_where_sql}"
         uncat_count_row = db._conn.execute(uncat_count_query, uncat_params).fetchone()
         uncategorized_total = int(uncat_count_row[0] if uncat_count_row else 0)
 
         # Query paginated rows
-        query = f"SELECT tx_id, date, clean_name, amount, category FROM tx_history{where_sql} ORDER BY date DESC, tx_id DESC LIMIT ? OFFSET ?"
+        query = f"SELECT tx_id, date, clean_name, amount, category FROM app_tx_history{where_sql} ORDER BY date DESC, tx_id DESC LIMIT ? OFFSET ?"
         page_params = params + [per_page, (page - 1) * per_page]
         rows = db._conn.execute(query, page_params).fetchall()
 
@@ -843,7 +843,7 @@ async def api_update_transaction(tx_id: str, request: Request):
     with _get_db() as db:
         # Get current merchant name for this transaction
         row = db._conn.execute(
-            "SELECT clean_name, original_description, category FROM tx_history WHERE tx_id = ?",
+            "SELECT clean_name, original_description, category FROM app_tx_history WHERE tx_id = ?",
             (tx_id,),
         ).fetchone()
 
@@ -858,14 +858,14 @@ async def api_update_transaction(tx_id: str, request: Request):
 
         if new_merchant:
             db._conn.execute(
-                "UPDATE tx_history SET clean_name = ? WHERE tx_id = ?",
+                "UPDATE app_tx_history SET clean_name = ? WHERE tx_id = ?",
                 (merchant_name, tx_id),
             )
 
         if new_category:
             # Also update the category directly on this transaction
             db._conn.execute(
-                "UPDATE tx_history SET category = ? WHERE tx_id = ?",
+                "UPDATE app_tx_history SET category = ? WHERE tx_id = ?",
                 (new_category, tx_id),
             )
         db._conn.commit()
@@ -903,11 +903,11 @@ async def api_bulk_update_category(request: Request):
     with _get_db() as db:
         placeholders = ",".join("?" for _ in cleaned_ids)
         merchant_rows = db._conn.execute(
-            f"SELECT tx_id, clean_name, original_description FROM tx_history WHERE tx_id IN ({placeholders})",
+            f"SELECT tx_id, clean_name, original_description FROM app_tx_history WHERE tx_id IN ({placeholders})",
             cleaned_ids,
         ).fetchall()
         db._conn.execute(
-            f"UPDATE tx_history SET category = ? WHERE tx_id IN ({placeholders})",
+            f"UPDATE app_tx_history SET category = ? WHERE tx_id IN ({placeholders})",
             [category, *cleaned_ids],
         )
         db._conn.commit()
@@ -934,7 +934,7 @@ def api_categories():
     """Return all known categories."""
     with _get_db() as db:
         cats = db._conn.execute(
-            "SELECT DISTINCT category FROM tx_history WHERE category != ? ORDER BY category",
+            "SELECT DISTINCT category FROM app_tx_history WHERE category != ? ORDER BY category",
             (UNCATEGORIZED,),
         ).fetchall()
     return {"categories": [normalize_category(row[0]) for row in cats]}
@@ -945,7 +945,7 @@ def api_categories_options():
     """Return all categories."""
     with _get_db() as db:
         cats = db._conn.execute(
-            "SELECT DISTINCT category FROM tx_history WHERE category != ? ORDER BY category",
+            "SELECT DISTINCT category FROM app_tx_history WHERE category != ? ORDER BY category",
             (UNCATEGORIZED,),
         ).fetchall()
     known_cats = [normalize_category(row[0]) for row in cats]
@@ -963,14 +963,14 @@ def api_settings():
         preferences = _load_app_preferences(db)
         effective_currency = _resolve_base_currency(settings, db)
         requires_currency_setup = _requires_base_currency_setup(db, settings)
-        tx_count = db._conn.execute("SELECT COUNT(*) FROM tx_history").fetchone()[0]
-        merchant_count = db._conn.execute("SELECT COUNT(*) FROM merchant_categories").fetchone()[0]
-        feedback_count = db._conn.execute("SELECT COUNT(*) FROM learning_feedback").fetchone()[0]
+        tx_count = db._conn.execute("SELECT COUNT(*) FROM app_tx_history").fetchone()[0]
+        merchant_count = db._conn.execute("SELECT COUNT(*) FROM app_merchant_categories").fetchone()[0]
+        feedback_count = db._conn.execute("SELECT COUNT(*) FROM app_learning_feedback").fetchone()[0]
         active_rule_count = db._conn.execute(
-            "SELECT COUNT(*) FROM category_rules WHERE is_active = true"
+            "SELECT COUNT(*) FROM app_category_rules WHERE is_active = true"
         ).fetchone()[0]
         cats = db._conn.execute(
-            "SELECT DISTINCT category FROM tx_history WHERE category != ?",
+            "SELECT DISTINCT category FROM app_tx_history WHERE category != ?",
             (UNCATEGORIZED,),
         ).fetchall()
     return {
@@ -1185,14 +1185,14 @@ def api_learning_summary():
     """Return recent learning events and summary counters."""
     with _get_db() as db:
         events = db.get_recent_learning_feedback(limit=40)
-        feedback_count = db._conn.execute("SELECT COUNT(*) FROM learning_feedback").fetchone()[0]
-        override_count = db._conn.execute("SELECT COUNT(*) FROM user_overrides").fetchone()[0]
+        feedback_count = db._conn.execute("SELECT COUNT(*) FROM app_learning_feedback").fetchone()[0]
+        override_count = db._conn.execute("SELECT COUNT(*) FROM app_user_overrides").fetchone()[0]
         uncategorized_count = db._conn.execute(
-            "SELECT COUNT(*) FROM tx_history WHERE category = ?",
+            "SELECT COUNT(*) FROM app_tx_history WHERE category = ?",
             (UNCATEGORIZED,),
         ).fetchone()[0]
         learned_future_count = db._conn.execute(
-            "SELECT COUNT(*) FROM learning_feedback WHERE apply_to_future = true"
+            "SELECT COUNT(*) FROM app_learning_feedback WHERE apply_to_future = true"
         ).fetchone()[0]
 
     return {
@@ -1586,7 +1586,7 @@ def api_budget():
         rows = db._conn.execute(
             """
             SELECT category, SUM(amount) as total
-            FROM tx_history
+            FROM app_tx_history
             WHERE amount < 0 AND date >= ? AND date < ?
             GROUP BY category
             """,
@@ -1598,7 +1598,7 @@ def api_budget():
         # All-time categories so we can show unspent ones too
         all_cats = db._conn.execute(
             """
-            SELECT DISTINCT category FROM tx_history
+            SELECT DISTINCT category FROM app_tx_history
             WHERE category != ? AND amount < 0
             ORDER BY category
             """
@@ -1673,7 +1673,7 @@ def api_trends():
 
     with _get_db() as db:
         rows = db._conn.execute(
-            "SELECT date, amount, category FROM tx_history ORDER BY date ASC"
+            "SELECT date, amount, category FROM app_tx_history ORDER BY date ASC"
         ).fetchall()
 
     if not rows:
@@ -1755,7 +1755,7 @@ def api_subscriptions():
         rows = db._conn.execute(
             """
             SELECT date, clean_name, amount, category, COALESCE(original_description, '')
-            FROM tx_history
+            FROM app_tx_history
             ORDER BY date ASC
             """
         ).fetchall()
