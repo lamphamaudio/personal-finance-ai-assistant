@@ -102,7 +102,7 @@ def test_patch_transaction_persists_learning(client: TestClient, web_settings: S
 
     with BookmarkDB(web_settings.database_url) as db:
         row = db._conn.execute(
-            "SELECT clean_name, category FROM tx_history WHERE tx_id = 'tx-1'"
+            "SELECT clean_name, category FROM app_tx_history WHERE tx_id = 'tx-1'"
         ).fetchone()
         assert row == ("Netflix", "Ðang ký d?nh k?")
         assert db.get_merchant_categories()["Netflix"] == "Ðang ký d?nh k?"
@@ -208,7 +208,7 @@ def test_rule_lifecycle_and_reapply_history(client: TestClient, web_settings: Se
 
     with BookmarkDB(web_settings.database_url) as db:
         category = db._conn.execute(
-            "SELECT category FROM tx_history WHERE tx_id = 'tx-rule'"
+            "SELECT category FROM app_tx_history WHERE tx_id = 'tx-rule'"
         ).fetchone()[0]
         assert category == "Mua s?m"
 
@@ -339,7 +339,7 @@ def test_confirm_respects_apply_to_future(client: TestClient, web_settings: Sett
     assert response.json()["ok"] is True
 
     with BookmarkDB(web_settings.database_url) as db:
-        assert db._conn.execute("SELECT COUNT(*) FROM tx_history").fetchone()[0] == 2
+        assert db._conn.execute("SELECT COUNT(*) FROM app_tx_history").fetchone()[0] == 2
         merchant_categories = db.get_merchant_categories()
         assert merchant_categories["Spotify"] == "Ðang ký d?nh k?"
         assert "One-off Store" not in merchant_categories

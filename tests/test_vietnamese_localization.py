@@ -58,26 +58,26 @@ def test_legacy_category_migration(tmp_path: Path):
         db.reset_all_data()
         db._conn.execute(
             """
-            INSERT INTO tx_history (tx_id, date, clean_name, amount, category, original_description)
+            INSERT INTO app_tx_history (tx_id, date, clean_name, amount, category, original_description)
             VALUES ('t1', '2026-05-28', 'Netflix', -260000, 'Digital Subscriptions', 'NETFLIX')
             """
         )
         db._conn.execute(
-            "INSERT INTO merchant_categories (clean_name, category) VALUES ('Grab', 'Transport')"
+            "INSERT INTO app_merchant_categories (clean_name, category) VALUES ('Grab', 'Transport')"
         )
         db._conn.execute(
-            "INSERT INTO budget_limits (category, monthly_limit) VALUES ('Food & Dining', 1000000)"
+            "INSERT INTO app_budget_limits (category, monthly_limit) VALUES ('Food & Dining', 1000000)"
         )
         db._conn.execute(
-            "INSERT INTO category_rules (rule_type, pattern, category) VALUES ('contains', 'x', 'Custom Cat')"
+            "INSERT INTO app_category_rules (rule_type, pattern, category) VALUES ('contains', 'x', 'Custom Cat')"
         )
         db._conn.commit()
 
     with BookmarkDB(database_url) as db:
-        tx_cat = db._conn.execute("SELECT category FROM tx_history WHERE tx_id = 't1'").fetchone()[0]
-        merchant_cat = db._conn.execute("SELECT category FROM merchant_categories WHERE clean_name = 'Grab'").fetchone()[0]
-        budget_cat = db._conn.execute("SELECT category FROM budget_limits").fetchone()[0]
-        custom_cat = db._conn.execute("SELECT category FROM category_rules").fetchone()[0]
+        tx_cat = db._conn.execute("SELECT category FROM app_tx_history WHERE tx_id = 't1'").fetchone()[0]
+        merchant_cat = db._conn.execute("SELECT category FROM app_merchant_categories WHERE clean_name = 'Grab'").fetchone()[0]
+        budget_cat = db._conn.execute("SELECT category FROM app_budget_limits").fetchone()[0]
+        custom_cat = db._conn.execute("SELECT category FROM app_category_rules").fetchone()[0]
         db.reset_all_data()
 
     assert tx_cat == SUBSCRIPTIONS
