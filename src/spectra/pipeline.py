@@ -43,7 +43,7 @@ def run(settings: Settings, file: str, currency: str, dry_run: bool) -> None:
         return
 
     # ── Step 2: Filter duplicates ────────────────────────────────
-    with BookmarkDB(settings.db_path) as db:
+    with BookmarkDB(settings.database_url) as db:
         new_txns = [t for t in parsed if not db.is_seen(t.id)]
         logger.info("📥 %d total, %d new", len(parsed), len(new_txns))
 

@@ -10,6 +10,7 @@ from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger("spectra")
+_SETTINGS_CACHE: Settings | None = None
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -57,6 +58,17 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
 
     # ── Database ─────────────────────────────────────────────────
+    database_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("DATABASE_URL", "POSTGRES_URL"),
+    )
+
+    @field_validator("database_url")
+    @classmethod
+    def _normalize_database_url(cls, v: str) -> str:
+        return str(v or "").strip()
+
+    # Kept for compatibility with older tests/scripts; runtime DB uses DATABASE_URL.
     db_path: Path = Field(default=_PROJECT_ROOT / "data" / "prism.db")
 
     # ── Behaviour ────────────────────────────────────────────────
@@ -95,11 +107,19 @@ class Settings(BaseSettings):
                 "Missing secrets (some features may fail): %s", ", ".join(missing)
             )
 
+        if not self.database_url:
+            logger.warning("Missing DATABASE_URL (Postgres/Supabase database access will fail)")
+
         return self
 
 
 def load_settings() -> Settings:
     """Load settings and configure logging."""
+    global _SETTINGS_CACHE
+
+    if _SETTINGS_CACHE is not None:
+        return _SETTINGS_CACHE
+
     settings = Settings()  # type: ignore[call-arg]
 
     logging.basicConfig(
@@ -109,9 +129,10 @@ def load_settings() -> Settings:
     )
 
     logger.info(
-        "Spectra config loaded (provider=%s, db=%s, env=%s)",
+        "Spectra config loaded (provider=%s, database_url=%s, env=%s)",
         settings.ai_provider,
-        settings.db_path,
+        "set" if settings.database_url else "missing",
         _ENV_FILE,
     )
+    _SETTINGS_CACHE = settings
     return settings

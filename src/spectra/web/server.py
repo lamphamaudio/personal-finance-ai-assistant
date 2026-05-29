@@ -1,4 +1,4 @@
-﻿"""Spectra Web Dashboard â€” FastAPI backend."""
+"""Spectra Web Dashboard â€” FastAPI backend."""
 
 from __future__ import annotations
 
@@ -67,6 +67,49 @@ _CURRENCY_CODE_RE = re.compile(r"^[A-Z]{3}$")
 
 from fastapi.responses import JSONResponse as _JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from spectra.cycles import (
+    CYCLE_MODE_FIXED,
+    DEFAULT_CYCLE_RULE,
+    DEFAULT_CYCLE_START_DAY,
+    MAX_CYCLE_START_DAY,
+    VALID_CYCLE_MODES,
+    cycle_start_for,
+    cycle_window_for,
+    format_cycle_label,
+    next_cycle_start,
+    parse_cycle_rule,
+    normalize_cycle_start_day,
+    parse_iso_date,
+    serialize_cycle_rule,
+)
+from spectra.db import BookmarkDB
+from spectra.ml_classifier import build_seed_data
+from spectra.recurring import detect_recurring_kind
+from spectra.rules import VALID_RULE_TYPES, normalize_rule_type
+
+logger = logging.getLogger("spectra.web")
+
+_HERE = Path(__file__).parent
+_TEMPLATES = _HERE / "templates"
+_STATIC = _HERE / "static"
+
+app = FastAPI(title="Spectra Dashboard", docs_url=None, redoc_url=None)
+app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
+templates = Jinja2Templates(directory=str(_TEMPLATES))
+
+_THEME_SETTING_KEY = "theme_preference"
+_CYCLE_RULE_SETTING_KEY = "cycle_start_day"
+_BASE_CURRENCY_SETTING_KEY = "base_currency"
+_VALID_THEME_PREFERENCES = {"auto", "light", "dark"}
+_VALID_SUMMARY_SCOPES = {"cycle", "90d", "ytd"}
+_CURRENCY_CODE_RE = re.compile(r"^[A-Z]{3}$")
+
+
+# â”€â”€ Global error handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+
+from fastapi.responses import JSONResponse as _JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -79,12 +122,23 @@ async def generic_exception_handler(request, exc):
     logger.exception("Unhandled error: %s", exc)
     return _JSONResponse({"error": "Internal server error"}, status_code=500)
 
+_PREFERENCES_CACHE: dict[str, Any] = {}
+_PREFERENCES_CACHE_TIMESTAMP: float = 0.0
+_PREFERENCES_CACHE_TTL: float = 10.0  # seconds
+
+
 def _get_db() -> BookmarkDB:
     settings = load_settings()
-    return BookmarkDB(settings.db_path)
+    return BookmarkDB(settings.database_url)
 
 
 def _load_app_preferences(db: BookmarkDB | None = None) -> dict[str, Any]:
+    import time
+    global _PREFERENCES_CACHE, _PREFERENCES_CACHE_TIMESTAMP
+    now = time.time()
+    if not db and _PREFERENCES_CACHE and (now - _PREFERENCES_CACHE_TIMESTAMP < _PREFERENCES_CACHE_TTL):
+        return _PREFERENCES_CACHE
+
     owns_db = db is None
     db = db or _get_db()
     try:
@@ -106,7 +160,7 @@ def _load_app_preferences(db: BookmarkDB | None = None) -> dict[str, Any]:
         if owns_db:
             db.close()
 
-    return {
+    res = {
         "theme_preference": theme_preference,
         "cycle_mode": cycle_mode,
         "cycle_rule": cycle_rule,
@@ -115,6 +169,10 @@ def _load_app_preferences(db: BookmarkDB | None = None) -> dict[str, Any]:
         # Backward compatibility for older clients.
         "cycle_start_day": fixed_cycle_start_day,
     }
+    if not db:
+        _PREFERENCES_CACHE = res
+        _PREFERENCES_CACHE_TIMESTAMP = now
+    return res
 
 
 def _build_cycle_payload(cycle_rule: str):
@@ -184,7 +242,7 @@ def _setup_redirect_if_needed(request: Request) -> RedirectResponse | None:
     if request.url.path == "/settings":
         return None
     settings = load_settings()
-    with BookmarkDB(settings.db_path) as db:
+    with BookmarkDB(settings.database_url) as db:
         if _requires_base_currency_setup(db, settings):
             return RedirectResponse(url="/settings?setup=currency", status_code=303)
     return None
@@ -490,33 +548,33 @@ def _build_summary_insights(
 
 
 @app.get("/", response_class=HTMLResponse)
-async def page_dashboard(request: Request):
+def page_dashboard(request: Request):
     if (redirect := _setup_redirect_if_needed(request)):
         return redirect
     return templates.TemplateResponse(request, "dashboard.html", _template_context(request))
 
 
 @app.get("/transactions", response_class=HTMLResponse)
-async def page_transactions(request: Request):
+def page_transactions(request: Request):
     if (redirect := _setup_redirect_if_needed(request)):
         return redirect
     return templates.TemplateResponse(request, "transactions.html", _template_context(request))
 
 
 @app.get("/upload", response_class=HTMLResponse)
-async def page_upload(request: Request):
+def page_upload(request: Request):
     if (redirect := _setup_redirect_if_needed(request)):
         return redirect
     return templates.TemplateResponse(request, "upload.html", _template_context(request))
 
 
 @app.get("/settings", response_class=HTMLResponse)
-async def page_settings(request: Request):
+def page_settings(request: Request):
     return templates.TemplateResponse(request, "settings.html", _template_context(request))
 
 
 @app.get("/subscriptions", response_class=HTMLResponse)
-async def page_subscriptions(request: Request):
+def page_subscriptions(request: Request):
     if (redirect := _setup_redirect_if_needed(request)):
         return redirect
     return templates.TemplateResponse(request, "subscriptions.html", _template_context(request))
@@ -526,7 +584,7 @@ async def page_subscriptions(request: Request):
 
 
 @app.get("/api/summary")
-async def api_summary(scope: str = Query("cycle")):
+def api_summary(scope: str = Query("cycle")):
     """Return dashboard-level stats."""
     scope = (scope or "cycle").strip().lower()
     if scope not in _VALID_SUMMARY_SCOPES:
@@ -687,9 +745,8 @@ async def api_summary(scope: str = Query("cycle")):
 
 # â”€â”€ API: Transactions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-
 @app.get("/api/transactions")
-async def api_transactions(
+def api_transactions(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=10, le=200),
     category: str = Query("", alias="category"),
@@ -698,49 +755,83 @@ async def api_transactions(
     date_from: str = Query(""),
     date_to: str = Query(""),
 ):
-    """Return paginated transactions from history."""
+    """Return paginated transactions from history with SQL-level filtering and paging."""
+    where_clauses = []
+    params = []
+
+    if category:
+        where_clauses.append("LOWER(category) = LOWER(?)")
+        params.append(category)
+    if uncategorized_only:
+        where_clauses.append("category = ?")
+        params.append(UNCATEGORIZED)
+    if search:
+        where_clauses.append("LOWER(clean_name) LIKE LOWER(?)")
+        params.append(f"%{search}%")
+    if date_from:
+        where_clauses.append("date >= ?")
+        params.append(date_from)
+    if date_to:
+        where_clauses.append("date <= ?")
+        params.append(date_to)
+
+    where_sql = ""
+    if where_clauses:
+        where_sql = " WHERE " + " AND ".join(where_clauses)
+
     with _get_db() as db:
-        query = "SELECT tx_id, date, clean_name, amount, category FROM tx_history ORDER BY date DESC"
-        rows = db._conn.execute(query).fetchall()
+        # Count total matching rows
+        count_query = f"SELECT COUNT(*) FROM tx_history{where_sql}"
+        count_row = db._conn.execute(count_query, params).fetchone()
+        total = int(count_row[0] if count_row else 0)
 
-    # Build result with categories
-    results = []
-    for tx_id, date, clean_name, amount, cat in rows:
+        # Count total uncategorized rows matching the same filter (except uncategorized_only filter)
+        uncat_where_clauses = []
+        uncat_params = []
+        if category:
+            uncat_where_clauses.append("LOWER(category) = LOWER(?)")
+            uncat_params.append(category)
+        uncat_where_clauses.append("category = ?")
+        uncat_params.append(UNCATEGORIZED)
+        if search:
+            uncat_where_clauses.append("LOWER(clean_name) LIKE LOWER(?)")
+            uncat_params.append(f"%{search}%")
+        if date_from:
+            uncat_where_clauses.append("date >= ?")
+            uncat_params.append(date_from)
+        if date_to:
+            uncat_where_clauses.append("date <= ?")
+            uncat_params.append(date_to)
 
-        # Filters
-        if category and cat.lower() != category.lower():
-            continue
-        if uncategorized_only and cat != UNCATEGORIZED:
-            continue
-        if search and search.lower() not in clean_name.lower():
-            continue
-        if date_from and date < date_from:
-            continue
-        if date_to and date > date_to:
-            continue
+        uncat_where_sql = " WHERE " + " AND ".join(uncat_where_clauses)
+        uncat_count_query = f"SELECT COUNT(*) FROM tx_history{uncat_where_sql}"
+        uncat_count_row = db._conn.execute(uncat_count_query, uncat_params).fetchone()
+        uncategorized_total = int(uncat_count_row[0] if uncat_count_row else 0)
 
-        results.append({
+        # Query paginated rows
+        query = f"SELECT tx_id, date, clean_name, amount, category FROM tx_history{where_sql} ORDER BY date DESC, tx_id DESC LIMIT ? OFFSET ?"
+        page_params = params + [per_page, (page - 1) * per_page]
+        rows = db._conn.execute(query, page_params).fetchall()
+
+    # Build result
+    page_data = []
+    for tx_id, date_str, clean_name, amount, cat in rows:
+        page_data.append({
             "id": tx_id,
-            "date": date,
+            "date": date_str,
             "merchant": clean_name,
             "category": cat,
             "amount": amount,
         })
 
-    total = len(results)
-    start = (page - 1) * per_page
-    page_data = results[start : start + per_page]
-
     return {
         "transactions": page_data,
         "total": total,
-        "uncategorized_total": sum(1 for tx in results if tx["category"] == UNCATEGORIZED),
+        "uncategorized_total": uncategorized_total,
         "page": page,
         "per_page": per_page,
         "pages": max(1, (total + per_page - 1) // per_page),
     }
-
-
 @app.patch("/api/transactions/{tx_id}")
 async def api_update_transaction(tx_id: str, request: Request):
     """Update merchant name and/or category for a transaction."""
@@ -839,7 +930,7 @@ async def api_bulk_update_category(request: Request):
 
 
 @app.get("/api/categories")
-async def api_categories():
+def api_categories():
     """Return all known categories."""
     with _get_db() as db:
         cats = db._conn.execute(
@@ -850,7 +941,7 @@ async def api_categories():
 
 
 @app.get("/api/categories/options")
-async def api_categories_options():
+def api_categories_options():
     """Return all categories."""
     with _get_db() as db:
         cats = db._conn.execute(
@@ -865,7 +956,7 @@ async def api_categories_options():
 
 
 @app.get("/api/settings")
-async def api_settings():
+def api_settings():
     """Return current config for the settings page."""
     settings = load_settings()
     with _get_db() as db:
@@ -876,7 +967,7 @@ async def api_settings():
         merchant_count = db._conn.execute("SELECT COUNT(*) FROM merchant_categories").fetchone()[0]
         feedback_count = db._conn.execute("SELECT COUNT(*) FROM learning_feedback").fetchone()[0]
         active_rule_count = db._conn.execute(
-            "SELECT COUNT(*) FROM category_rules WHERE is_active = 1"
+            "SELECT COUNT(*) FROM category_rules WHERE is_active = true"
         ).fetchone()[0]
         cats = db._conn.execute(
             "SELECT DISTINCT category FROM tx_history WHERE category != ?",
@@ -956,6 +1047,8 @@ async def api_update_preferences(request: Request):
 
         for key, value in updates.items():
             db.set_app_setting(key, value)
+        global _PREFERENCES_CACHE_TIMESTAMP
+        _PREFERENCES_CACHE_TIMESTAMP = 0.0
         preferences = _load_app_preferences(db)
         effective_currency = _resolve_base_currency(load_settings(), db)
         requires_currency_setup = _requires_base_currency_setup(db, load_settings())
@@ -969,7 +1062,7 @@ async def api_update_preferences(request: Request):
 
 
 @app.get("/api/settings/rules")
-async def api_get_category_rules():
+def api_get_category_rules():
     """Return user-defined categorization rules."""
     with _get_db() as db:
         rules = db.get_category_rules()
@@ -1078,7 +1171,7 @@ async def api_test_category_rule(request: Request):
 
 
 @app.delete("/api/settings/rules/{rule_id}")
-async def api_delete_category_rule(rule_id: int):
+def api_delete_category_rule(rule_id: int):
     """Delete a categorization rule by ID."""
     with _get_db() as db:
         deleted = db.delete_category_rule(rule_id)
@@ -1088,7 +1181,7 @@ async def api_delete_category_rule(rule_id: int):
 
 
 @app.get("/api/settings/learning")
-async def api_learning_summary():
+def api_learning_summary():
     """Return recent learning events and summary counters."""
     with _get_db() as db:
         events = db.get_recent_learning_feedback(limit=40)
@@ -1099,7 +1192,7 @@ async def api_learning_summary():
             (UNCATEGORIZED,),
         ).fetchone()[0]
         learned_future_count = db._conn.execute(
-            "SELECT COUNT(*) FROM learning_feedback WHERE apply_to_future = 1"
+            "SELECT COUNT(*) FROM learning_feedback WHERE apply_to_future = true"
         ).fetchone()[0]
 
     return {
@@ -1114,7 +1207,7 @@ async def api_learning_summary():
 
 
 @app.post("/api/settings/learning/reapply")
-async def api_reapply_learning():
+def api_reapply_learning():
     """Re-run deterministic learning on historical transactions."""
     with _get_db() as db:
         result = db.reapply_learning_to_history()
@@ -1123,7 +1216,7 @@ async def api_reapply_learning():
 
 @app.post("/api/settings/reset-db")
 async def api_reset_db(request: Request):
-    """Reset local SQLite data after explicit confirmation."""
+    """Reset Postgres data after explicit confirmation."""
     body = await request.json()
     if body.get("confirm") != "RESET":
         return JSONResponse(
@@ -1134,10 +1227,10 @@ async def api_reset_db(request: Request):
     with _get_db() as db:
         deleted = db.reset_all_data()
 
-    logger.warning("Local DB reset requested from settings page: %s", deleted)
+    logger.warning("Postgres DB reset requested from settings page: %s", deleted)
     return {
         "ok": True,
-        "message": "Local database reset completed",
+        "message": "Postgres database reset completed",
         "deleted": deleted,
     }
 
@@ -1153,7 +1246,7 @@ async def api_upload(file: UploadFile = File(...)):
     from fastapi.responses import StreamingResponse as _SR
 
     settings = load_settings()
-    with BookmarkDB(settings.db_path) as db:
+    with BookmarkDB(settings.database_url) as db:
         if _requires_base_currency_setup(db, load_settings()):
             return JSONResponse(
                 {"error": "Base currency not set. Open Settings and choose your base currency first."},
@@ -1384,7 +1477,7 @@ async def api_confirm(request: Request):
         return {"ok": False, "message": "No transactions to save"}
 
     settings = load_settings()
-    with BookmarkDB(settings.db_path) as db:
+    with BookmarkDB(settings.database_url) as db:
         if _requires_base_currency_setup(db, load_settings()):
             return JSONResponse(
                 {"ok": False, "message": "Base currency not set. Open Settings and choose your base currency first."},
@@ -1466,14 +1559,14 @@ async def api_confirm(request: Request):
 
 
 @app.get("/budget", response_class=HTMLResponse)
-async def page_budget(request: Request):
+def page_budget(request: Request):
     if (redirect := _setup_redirect_if_needed(request)):
         return redirect
     return templates.TemplateResponse(request, "budget.html", _template_context(request))
 
 
 @app.get("/trends", response_class=HTMLResponse)
-async def page_trends(request: Request):
+def page_trends(request: Request):
     if (redirect := _setup_redirect_if_needed(request)):
         return redirect
     return templates.TemplateResponse(request, "trends.html", _template_context(request))
@@ -1483,7 +1576,7 @@ async def page_trends(request: Request):
 
 
 @app.get("/api/budget")
-async def api_budget():
+def api_budget():
     """Return per-category budget status for the current month."""
     preferences = _load_app_preferences()
     current_cycle = _build_cycle_payload(preferences["cycle_rule"])
@@ -1571,7 +1664,7 @@ async def api_update_budget(category: str, request: Request):
 
 
 @app.get("/api/trends")
-async def api_trends():
+def api_trends():
     """Return year-over-year financial data for the Trends page."""
     from collections import defaultdict
 
@@ -1649,7 +1742,7 @@ async def api_trends():
 
 
 @app.get("/api/subscriptions")
-async def api_subscriptions():
+def api_subscriptions():
     """Return recurring subscriptions with monthly and annual projections."""
     from collections import defaultdict
     from datetime import date, timedelta
