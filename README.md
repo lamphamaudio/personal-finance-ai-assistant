@@ -1,49 +1,128 @@
 # Personal Finance AI Assistant
 
-An elegant personal finance dashboard that helps you automate, categorize, and track your financial health with a Supabase/Postgres backend.
+🏦 Hệ thống quản lý tài chính cá nhân với AI
 
-## Key Features
+**2 Services:**
+- **Main Service (Spectra)** - Dashboard, AI categorization, Budget tracking → Port 8081
+- **Bank Simulator** - REST API với dữ liệu test → Port 8000
 
-- **Private Backend Storage**: Financial data is stored in your Postgres database. Supabase is supported through `DATABASE_URL`; the frontend does not connect to Supabase directly.
-- **Offline ML Categorization**: Uses an intelligent local Machine Learning engine (TF-IDF + Logistic Regression) that auto-cleans transaction descriptions, predicts categories, and learns from your manual corrections over time.
-- **Dynamic Budgets & Cycles**: Track your expenses against customizable financial cycles (e.g., salary paydays) with live status indicators (🟢/🟡/🔴).
-- **Interactive Web Dashboard**: An elegant dark/light theme interface at `http://localhost:8081` featuring:
-  - **Overview**: High-level burn-rate projections, net cash flows, and category distributions.
-  - **Transactions Ledger**: Searchable, paginated history with inline merchant & category editing.
-  - **Smart Upload**: Drag-and-drop CSV, PDF, or OFX statements with inline suggestions and bulk edits.
-  - **Trends**: Month-over-month and year-over-year spending breakdowns.
-  - **Subscriptions Tracker**: Automatically detects recurring subscriptions (Netflix, Spotify, etc.) and flags price increases.
+Dùng chung **Supabase PostgreSQL Database**
 
-## Quick Start (Local Python Mode)
+---
 
-### 1. Install Dependencies
+## 🚀 Khởi động
 
-Ensure you have [uv](https://github.com/astral-sh/uv) installed, then sync the virtual environment:
-
+### Lần đầu tiên (Setup):
 ```bash
-uv sync --locked
+py setup.py
 ```
 
-### 2. Configure Postgres
+### Khởi động services:
 
-Create a `.env` file and set your Supabase/Postgres connection string:
+**Cách 1: Tự mở 2 terminal (Đơn giản nhất)**
 
+Terminal 1:
 ```bash
-DATABASE_URL=postgresql://postgres.project-ref:password@aws-0-region.pooler.supabase.com:5432/postgres
-AI_PROVIDER=local
-BASE_CURRENCY=VND
+cd bank_simulator
+py main.py
 ```
 
-Use a Supabase direct connection or Session Pooler for the long-running FastAPI server. Do not commit the real URL.
-
-### 3. Run the Dashboard
-
-Start the local web server:
-
+Terminal 2:
 ```bash
-uv run python -m spectra --serve --port 8081
+py -m spectra --serve --port 8081
 ```
 
-Open **[http://localhost:8081](http://localhost:8081)** in your browser to get started!
+**Cách 2: Double-click file .cmd**
+- `start_bank_simulator.cmd`
+- `start_main_service.cmd`
 
-*Note: On your first visit, navigate to the **Settings (Cài đặt)** page to set your **Base Currency (VND)** before importing your first bank statement.*
+**Truy cập:**
+- Main Service: http://localhost:8081
+- Bank Simulator: http://localhost:8000/docs
+
+---
+
+## 📊 Tính năng
+
+### Main Service (8081)
+- Dashboard với charts
+- Upload CSV/PDF/OFX
+- AI categorization
+- Budget tracking
+- Trends analysis
+
+### Bank Simulator (8000)
+- REST API (6 endpoints)
+- 69 users, 8,033 transactions
+- 3 personas: Student, Office Worker, High-Net-Worth
+- Anomaly detection (4.8%)
+- Balance prediction
+
+---
+
+## 🗄️ Database
+
+**Supabase PostgreSQL**
+
+**Tables:**
+- Main: `app_*` (8 tables)
+- Bank Sim: `bank_*`, `user_*` (4 tables)
+
+**Data:**
+- 69 accounts
+- 8,033 transactions
+- 386 anomalies
+
+---
+
+## 🔧 API Endpoints
+
+```
+GET /                          Health check
+GET /stats                     Statistics
+GET /users                     List users
+GET /transactions?user_id=...  Transactions
+GET /summary?user_id=...       Summary
+GET /anomalies?user_id=...     Anomalies
+GET /prediction?user_id=...    Prediction
+```
+
+Docs: http://localhost:8000/docs
+
+---
+
+## 📁 Cấu trúc
+
+```
+personal-finance-ai-assistant/
+├── run.py                    ← CHẠY FILE NÀY
+├── .env                      ← Config
+├── src/spectra/              ← Main service
+├── supabase/migrations/      ← Database schemas
+└── bank_simulator/           ← Bank simulator
+    ├── .env
+    ├── main.py               ← API server
+    └── data_seeder.py        ← Data generator
+```
+
+---
+
+## 🛠️ Troubleshooting
+
+**Port đã dùng:**
+```bash
+netstat -ano | findstr :8081
+taskkill /PID <PID> /F
+```
+
+**Database lỗi:**
+Check `DATABASE_URL` trong `.env` và `bank_simulator/.env`
+
+**Module not found:**
+```bash
+py -m pip install -e .
+```
+
+---
+
+**Version:** 1.0.0 | **Status:** ✅ Production Ready

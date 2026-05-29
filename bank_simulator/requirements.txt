@@ -1,0 +1,17 @@
+# Bank Simulator Python Dependencies
+# ====================================
+
+# Database
+psycopg2-binary==2.9.9
+psycopg-pool==3.2.0
+
+# Web Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+
+# Data Generation
+Faker==22.0.0
+
+# Utilities
+python-dotenv==1.0.0
