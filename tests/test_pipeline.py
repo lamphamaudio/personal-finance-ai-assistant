@@ -1,5 +1,6 @@
 ﻿"""Integration test â€” full pipeline with mocked AI and Sheets."""
 
+import os
 from pathlib import Path
 from textwrap import dedent
 from unittest.mock import MagicMock, patch
@@ -11,18 +12,33 @@ from spectra.pipeline import run
 
 
 @pytest.fixture
-def settings(tmp_path: Path) -> Settings:
+def database_url() -> str:
+    url = os.environ.get("DATABASE_URL_TEST") or os.environ.get("DATABASE_URL")
+    if not url:
+        pytest.skip("DATABASE_URL_TEST or DATABASE_URL is required for Postgres pipeline tests")
+    return url
+
+
+@pytest.fixture
+def settings(tmp_path: Path, database_url: str) -> Settings:
     dummy_creds = tmp_path / "dummy.json"
     dummy_creds.touch()
-    return Settings(
+    settings = Settings(
         spreadsheet_id="test-sheet-id",
         google_sheets_credentials_b64="",
         google_sheets_credentials_file=str(dummy_creds),
         ai_provider="gemini",
         gemini_api_key="test-gemini-key",
-        db_path=tmp_path / "test.db",
+        database_url=database_url,
         log_level="DEBUG",
     )
+    from spectra.db import BookmarkDB
+
+    with BookmarkDB(settings.database_url) as db:
+        db.reset_all_data()
+    yield settings
+    with BookmarkDB(settings.database_url) as db:
+        db.reset_all_data()
 
 
 @pytest.fixture
@@ -114,11 +130,10 @@ class TestPipelineIntegration:
         from spectra.csv_parser import parse_csv
 
         txns = parse_csv(csv_file)
-        with BookmarkDB(settings.db_path) as db:
+        with BookmarkDB(settings.database_url) as db:
             db.mark_seen_batch([t.id for t in txns])
 
         # Now run â€” should detect all as seen and exit early
         with patch("spectra.pipeline.categorise") as mock_cat:
             run(settings, file=csv_file, currency="EUR", dry_run=True)
             mock_cat.assert_not_called()  # AI never called
-

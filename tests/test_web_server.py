@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import os
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,14 +16,22 @@ from spectra.web import server
 
 
 @pytest.fixture
-def web_settings(tmp_path: Path) -> Settings:
+def database_url() -> str:
+    url = os.environ.get("DATABASE_URL_TEST") or os.environ.get("DATABASE_URL")
+    if not url:
+        pytest.skip("DATABASE_URL_TEST or DATABASE_URL is required for Postgres web tests")
+    return url
+
+
+@pytest.fixture
+def web_settings(tmp_path: Path, database_url: str) -> Settings:
     creds = tmp_path / "dummy.json"
     creds.write_text("{}")
     return Settings(
         ai_provider="local",
         spreadsheet_id="",
         google_sheets_credentials_file=str(creds),
-        db_path=tmp_path / "web.db",
+        database_url=database_url,
         log_level="DEBUG",
     )
 
@@ -30,7 +39,12 @@ def web_settings(tmp_path: Path) -> Settings:
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch, web_settings: Settings) -> TestClient:
     monkeypatch.setattr(server, "load_settings", lambda: web_settings)
-    return TestClient(server.app)
+    with BookmarkDB(web_settings.database_url) as db:
+        db.reset_all_data()
+    client = TestClient(server.app)
+    yield client
+    with BookmarkDB(web_settings.database_url) as db:
+        db.reset_all_data()
 
 
 def seed_tx(
@@ -68,31 +82,31 @@ def parse_sse_events(raw: str) -> list[dict[str, object]]:
 
 
 def test_patch_transaction_persists_learning(client: TestClient, web_settings: Settings) -> None:
-    with BookmarkDB(web_settings.db_path) as db:
+    with BookmarkDB(web_settings.database_url) as db:
         seed_tx(
             db,
             tx_id="tx-1",
             tx_date="2026-03-10",
             merchant="Netflix.Com",
             amount=-12.99,
-            category="Chưa phân loại",
+            category="Chua phân lo?i",
             original_description="ADDEBITO SDD NETFLIX.COM",
         )
 
     response = client.patch(
         "/api/transactions/tx-1",
-        json={"merchant": "Netflix", "category": "Đăng ký định kỳ", "apply_to_future": True},
+        json={"merchant": "Netflix", "category": "Ðang ký d?nh k?", "apply_to_future": True},
     )
     assert response.status_code == 200
     assert response.json()["ok"] is True
 
-    with BookmarkDB(web_settings.db_path) as db:
+    with BookmarkDB(web_settings.database_url) as db:
         row = db._conn.execute(
             "SELECT clean_name, category FROM tx_history WHERE tx_id = 'tx-1'"
         ).fetchone()
-        assert row == ("Netflix", "Đăng ký định kỳ")
-        assert db.get_merchant_categories()["Netflix"] == "Đăng ký định kỳ"
-        assert db.get_overrides()["ADDEBITO SDD NETFLIX.COM"]["category"] == "Đăng ký định kỳ"
+        assert row == ("Netflix", "Ðang ký d?nh k?")
+        assert db.get_merchant_categories()["Netflix"] == "Ðang ký d?nh k?"
+        assert db.get_overrides()["ADDEBITO SDD NETFLIX.COM"]["category"] == "Ðang ký d?nh k?"
 
         learning = db.get_recent_learning_feedback(limit=5)
         assert learning[0]["source"] == "manual_edit"
@@ -115,7 +129,7 @@ def test_base_currency_can_be_set_via_preferences(client: TestClient, web_settin
     assert payload["currency"] == "USD"
     assert payload["requires_base_currency_setup"] is False
 
-    with BookmarkDB(web_settings.db_path) as db:
+    with BookmarkDB(web_settings.database_url) as db:
         assert db.get_app_setting("base_currency") == "USD"
 
 
@@ -132,7 +146,7 @@ def test_cycle_mode_can_be_set_to_last_business_day(client: TestClient, web_sett
     assert payload["fixed_cycle_start_day"] is None
     assert payload["current_cycle"]["cycle_mode"] == "last_business_day"
 
-    with BookmarkDB(web_settings.db_path) as db:
+    with BookmarkDB(web_settings.database_url) as db:
         assert db.get_app_setting("cycle_start_day") == "last_business_day"
 
 
@@ -140,7 +154,7 @@ def test_legacy_numeric_cycle_setting_is_clamped_and_exposed_as_fixed_rule(
     client: TestClient,
     web_settings: Settings,
 ) -> None:
-    with BookmarkDB(web_settings.db_path) as db:
+    with BookmarkDB(web_settings.database_url) as db:
         db.set_app_setting("cycle_start_day", "31")
 
     response = client.get("/api/settings")
@@ -153,20 +167,20 @@ def test_legacy_numeric_cycle_setting_is_clamped_and_exposed_as_fixed_rule(
 
 
 def test_rule_lifecycle_and_reapply_history(client: TestClient, web_settings: Settings) -> None:
-    with BookmarkDB(web_settings.db_path) as db:
+    with BookmarkDB(web_settings.database_url) as db:
         seed_tx(
             db,
             tx_id="tx-rule",
             tx_date="2026-03-09",
             merchant="Amzn Mktp",
             amount=-45.0,
-            category="Chưa phân loại",
+            category="Chua phân lo?i",
             original_description="AMZN MKTP DIGITAL",
         )
 
     create_response = client.post(
         "/api/settings/rules",
-        json={"rule_type": "contains", "pattern": "amzn", "category": "Mua sắm"},
+        json={"rule_type": "contains", "pattern": "amzn", "category": "Mua s?m"},
     )
     assert create_response.status_code == 200
     rule_id = create_response.json()["rule"]["id"]
@@ -192,11 +206,11 @@ def test_rule_lifecycle_and_reapply_history(client: TestClient, web_settings: Se
     assert reapply_response.status_code == 200
     assert reapply_response.json()["updated"] >= 1
 
-    with BookmarkDB(web_settings.db_path) as db:
+    with BookmarkDB(web_settings.database_url) as db:
         category = db._conn.execute(
             "SELECT category FROM tx_history WHERE tx_id = 'tx-rule'"
         ).fetchone()[0]
-        assert category == "Mua sắm"
+        assert category == "Mua s?m"
 
 
 def test_summary_and_subscriptions_surface_signals(client: TestClient, web_settings: Settings) -> None:
@@ -205,15 +219,15 @@ def test_summary_and_subscriptions_surface_signals(client: TestClient, web_setti
     prior_cycle_day = (today - timedelta(days=32)).isoformat()
     two_cycles_back_day = (today - timedelta(days=64)).isoformat()
 
-    with BookmarkDB(web_settings.db_path) as db:
-        db.save_budget_limit("Ăn uống", 100.0)
+    with BookmarkDB(web_settings.database_url) as db:
+        db.save_budget_limit("An u?ng", 100.0)
         seed_tx(
             db,
             tx_id="tx-food-current",
             tx_date=current_day,
             merchant="Starbucks",
             amount=-80.0,
-            category="Ăn uống",
+            category="An u?ng",
             original_description="POS STARBUCKS",
         )
         seed_tx(
@@ -222,7 +236,7 @@ def test_summary_and_subscriptions_surface_signals(client: TestClient, web_setti
             tx_date=prior_cycle_day,
             merchant="Starbucks",
             amount=-20.0,
-            category="Ăn uống",
+            category="An u?ng",
             original_description="POS STARBUCKS",
         )
         seed_tx(
@@ -231,7 +245,7 @@ def test_summary_and_subscriptions_surface_signals(client: TestClient, web_setti
             tx_date=current_day,
             merchant="Unknown Merchant",
             amount=-12.0,
-            category="Chưa phân loại",
+            category="Chua phân lo?i",
             original_description="RANDOM UNKNOWN PURCHASE",
         )
         seed_tx(
@@ -240,7 +254,7 @@ def test_summary_and_subscriptions_surface_signals(client: TestClient, web_setti
             tx_date=prior_cycle_day,
             merchant="Another Unknown Merchant",
             amount=-8.0,
-            category="Chưa phân loại",
+            category="Chua phân lo?i",
             original_description="ANOTHER UNKNOWN PURCHASE",
         )
         seed_tx(
@@ -249,7 +263,7 @@ def test_summary_and_subscriptions_surface_signals(client: TestClient, web_setti
             tx_date=two_cycles_back_day,
             merchant="Netflix",
             amount=-9.99,
-            category="Đăng ký định kỳ",
+            category="Ðang ký d?nh k?",
             original_description="NETFLIX.COM",
         )
         seed_tx(
@@ -258,7 +272,7 @@ def test_summary_and_subscriptions_surface_signals(client: TestClient, web_setti
             tx_date=prior_cycle_day,
             merchant="Netflix",
             amount=-9.99,
-            category="Đăng ký định kỳ",
+            category="Ðang ký d?nh k?",
             original_description="NETFLIX.COM",
         )
         seed_tx(
@@ -267,7 +281,7 @@ def test_summary_and_subscriptions_surface_signals(client: TestClient, web_setti
             tx_date=current_day,
             merchant="Netflix",
             amount=-14.99,
-            category="Đăng ký định kỳ",
+            category="Ðang ký d?nh k?",
             original_description="NETFLIX.COM",
         )
 
@@ -290,7 +304,7 @@ def test_summary_and_subscriptions_surface_signals(client: TestClient, web_setti
 
 
 def test_confirm_respects_apply_to_future(client: TestClient, web_settings: Settings) -> None:
-    with BookmarkDB(web_settings.db_path) as db:
+    with BookmarkDB(web_settings.database_url) as db:
         db.set_app_setting("base_currency", "EUR")
 
     payload = {
@@ -299,10 +313,10 @@ def test_confirm_respects_apply_to_future(client: TestClient, web_settings: Sett
                 "id": "upload-1",
                 "date": "2026-03-11",
                 "merchant": "Spotify",
-                "category": "Đăng ký định kỳ",
+                "category": "Ðang ký d?nh k?",
                 "amount": -9.99,
                 "currency": "EUR",
-                "recurring": "Đăng ký định kỳ",
+                "recurring": "Ðang ký d?nh k?",
                 "original_description": "SPOTIFY AB",
                 "apply_to_future": True,
             },
@@ -310,7 +324,7 @@ def test_confirm_respects_apply_to_future(client: TestClient, web_settings: Sett
                 "id": "upload-2",
                 "date": "2026-03-11",
                 "merchant": "One-off Store",
-                "category": "Mua sắm",
+                "category": "Mua s?m",
                 "amount": -49.0,
                 "currency": "EUR",
                 "recurring": "",
@@ -324,14 +338,14 @@ def test_confirm_respects_apply_to_future(client: TestClient, web_settings: Sett
     assert response.status_code == 200
     assert response.json()["ok"] is True
 
-    with BookmarkDB(web_settings.db_path) as db:
+    with BookmarkDB(web_settings.database_url) as db:
         assert db._conn.execute("SELECT COUNT(*) FROM tx_history").fetchone()[0] == 2
         merchant_categories = db.get_merchant_categories()
-        assert merchant_categories["Spotify"] == "Đăng ký định kỳ"
+        assert merchant_categories["Spotify"] == "Ðang ký d?nh k?"
         assert "One-off Store" not in merchant_categories
 
         overrides = db.get_overrides()
-        assert overrides["SPOTIFY AB"]["category"] == "Đăng ký định kỳ"
+        assert overrides["SPOTIFY AB"]["category"] == "Ðang ký d?nh k?"
         assert "ONE OFF STORE" not in overrides
 
         learning = db.get_recent_learning_feedback(limit=10)
@@ -344,7 +358,7 @@ def test_upload_preview_includes_local_review_metadata(
     web_settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with BookmarkDB(web_settings.db_path) as db:
+    with BookmarkDB(web_settings.database_url) as db:
         db.set_app_setting("base_currency", "EUR")
 
     import spectra.csv_parser as csv_parser
@@ -374,16 +388,16 @@ def test_upload_preview_includes_local_review_metadata(
                 id="upload-local-1",
                 original_description="MYSTERY STORE 123",
                 clean_name="Mystery Store",
-                category="Chưa phân loại",
+                category="Chua phân lo?i",
                 amount=-14.2,
                 currency="EUR",
                 date="2026-03-15",
                 classification_source="fallback",
                 category_confidence=0.19,
                 category_suggestions=[
-                    CategorySuggestion(category="Mua sắm", score=0.19),
-                    CategorySuggestion(category="Đi chợ/Siêu thị", score=0.18),
-                    CategorySuggestion(category="Ăn uống", score=0.17),
+                    CategorySuggestion(category="Mua s?m", score=0.19),
+                    CategorySuggestion(category="Ði ch?/Siêu th?", score=0.18),
+                    CategorySuggestion(category="An u?ng", score=0.17),
                 ],
                 needs_review=True,
             )
@@ -421,7 +435,7 @@ def test_upload_preview_omits_local_review_metadata_for_cloud_mode(
     )
     monkeypatch.setattr(server, "load_settings", lambda: cloud_settings)
 
-    with BookmarkDB(web_settings.db_path) as db:
+    with BookmarkDB(web_settings.database_url) as db:
         db.set_app_setting("base_currency", "EUR")
 
     import spectra.ai as ai_module
@@ -449,7 +463,7 @@ def test_upload_preview_omits_local_review_metadata_for_cloud_mode(
                 id="upload-cloud-1",
                 original_description="SPOTIFY AB",
                 clean_name="Spotify",
-                category="Đăng ký định kỳ",
+                category="Ðang ký d?nh k?",
                 amount=-9.99,
                 currency="EUR",
                 date="2026-03-16",
@@ -475,4 +489,3 @@ def test_upload_preview_omits_local_review_metadata_for_cloud_mode(
     assert "classification_source" not in preview_row
     assert "needs_review" not in preview_row
     assert "category_suggestions" not in preview_row
-

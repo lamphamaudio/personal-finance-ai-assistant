@@ -1,10 +1,10 @@
 # Personal Finance AI Assistant
 
-An elegant, local-first personal finance dashboard that helps you automate, categorize, and track your financial health completely offline.
+An elegant personal finance dashboard that helps you automate, categorize, and track your financial health with a Supabase/Postgres backend.
 
 ## Key Features
 
-- **100% Offline & Private**: All data is processed and stored locally in a SQLite database (`data/prism.db`). Your bank statements never leave your computer.
+- **Private Backend Storage**: Financial data is stored in your Postgres database. Supabase is supported through `DATABASE_URL`; the frontend does not connect to Supabase directly.
 - **Offline ML Categorization**: Uses an intelligent local Machine Learning engine (TF-IDF + Logistic Regression) that auto-cleans transaction descriptions, predicts categories, and learns from your manual corrections over time.
 - **Dynamic Budgets & Cycles**: Track your expenses against customizable financial cycles (e.g., salary paydays) with live status indicators (🟢/🟡/🔴).
 - **Interactive Web Dashboard**: An elegant dark/light theme interface at `http://localhost:8081` featuring:
@@ -24,7 +24,19 @@ Ensure you have [uv](https://github.com/astral-sh/uv) installed, then sync the v
 uv sync --locked
 ```
 
-### 2. Run the Dashboard
+### 2. Configure Postgres
+
+Create a `.env` file and set your Supabase/Postgres connection string:
+
+```bash
+DATABASE_URL=postgresql://postgres.project-ref:password@aws-0-region.pooler.supabase.com:5432/postgres
+AI_PROVIDER=local
+BASE_CURRENCY=VND
+```
+
+Use a Supabase direct connection or Session Pooler for the long-running FastAPI server. Do not commit the real URL.
+
+### 3. Run the Dashboard
 
 Start the local web server:
 

@@ -22,7 +22,7 @@ _DATE_ALIASES = {
     "data esecuzione", "datum",
     "ngày", "ngay", "ngày giao dịch", "ngay giao dich",
     "ngày hiệu lực", "ngay hieu luc", "ngày hạch toán", "ngay hach toan",
-    "ngày phát sinh", "ngay phat sinh",
+    "ngày phát sinh", "ngay phat sinh", "ngày giờ", "ngay gio",
 }
 _DESCRIPTION_ALIASES = {
     "descrizione", "description", "causale",
@@ -51,6 +51,7 @@ _COUNTERPART_ALIASES = {
     "người nhận", "nguoi nhan", "người gửi", "nguoi gui",
     "tài khoản đối ứng", "tai khoan doi ung",
     "tên tài khoản đối ứng", "ten tai khoan doi ung",
+    "tk/đối tác", "tk/doi tac", "tài khoản đối tác", "tai khoan doi tac",
 }
 _CATEGORY_ALIASES = {
     "category", "categoria", "danh mục", "danh muc", "loại giao dịch", "loai giao dich",
@@ -137,7 +138,9 @@ def _parse_amount(raw: str) -> float:
 def _parse_date(raw: str) -> str:
     """Normalize date to YYYY-MM-DD from common formats."""
     from datetime import datetime
-    s = raw.strip()
+    s = raw.strip().replace("T", " ")
+    if " " in s:
+        s = s.split(" ")[0].strip()
 
     # Try strptime formats (ordered most-specific first)
     fmt_list = [

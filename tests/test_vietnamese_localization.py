@@ -1,5 +1,9 @@
 ﻿from pathlib import Path
 
+import os
+
+import pytest
+
 from spectra.categories import (
     GROCERIES,
     RECURRING_INCOME,
@@ -46,8 +50,12 @@ def test_vietnamese_amount_and_date_formats():
 
 
 def test_legacy_category_migration(tmp_path: Path):
-    db_path = tmp_path / "prism.db"
-    with BookmarkDB(db_path) as db:
+    database_url = os.environ.get("DATABASE_URL_TEST") or os.environ.get("DATABASE_URL")
+    if not database_url:
+        pytest.skip("DATABASE_URL_TEST or DATABASE_URL is required for Postgres DB tests")
+
+    with BookmarkDB(database_url) as db:
+        db.reset_all_data()
         db._conn.execute(
             """
             INSERT INTO tx_history (tx_id, date, clean_name, amount, category, original_description)
@@ -65,11 +73,12 @@ def test_legacy_category_migration(tmp_path: Path):
         )
         db._conn.commit()
 
-    with BookmarkDB(db_path) as db:
+    with BookmarkDB(database_url) as db:
         tx_cat = db._conn.execute("SELECT category FROM tx_history WHERE tx_id = 't1'").fetchone()[0]
         merchant_cat = db._conn.execute("SELECT category FROM merchant_categories WHERE clean_name = 'Grab'").fetchone()[0]
         budget_cat = db._conn.execute("SELECT category FROM budget_limits").fetchone()[0]
         custom_cat = db._conn.execute("SELECT category FROM category_rules").fetchone()[0]
+        db.reset_all_data()
 
     assert tx_cat == SUBSCRIPTIONS
     assert merchant_cat == TRANSPORT
@@ -111,4 +120,3 @@ def test_recurring_labels_are_vietnamese():
 
     assert txns[0].recurring == RECURRING_SUBSCRIPTION
     assert txns[1].recurring == RECURRING_INCOME
-
