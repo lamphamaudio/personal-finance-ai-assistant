@@ -1,0 +1,14 @@
+@import "../../src/spectra/web/static/styles.css";
+
+/* Extra overrides for React compatibility if needed */
+.edit-input, .preview-input {
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+
+.toast-container {
+  z-index: 9999;
+}

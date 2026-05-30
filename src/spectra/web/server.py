@@ -50,8 +50,18 @@ _HERE = Path(__file__).parent
 _TEMPLATES = _HERE / "templates"
 _STATIC = _HERE / "static"
 
-app = FastAPI(title="Spectra Dashboard", docs_url=None, redoc_url=None)
+app = FastAPI(title="Spectra Dashboard", docs_url="/docs", redoc_url="/redoc")
 app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
+
+_DIST_DIR = _HERE / "dist"
+_ASSETS_DIR = _DIST_DIR / "assets"
+if not _ASSETS_DIR.exists():
+    try:
+        _ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+app.mount("/assets", StaticFiles(directory=str(_ASSETS_DIR)), name="assets")
+
 templates = Jinja2Templates(directory=str(_TEMPLATES))
 
 _THEME_SETTING_KEY = "theme_preference"
@@ -62,50 +72,7 @@ _VALID_SUMMARY_SCOPES = {"cycle", "90d", "ytd"}
 _CURRENCY_CODE_RE = re.compile(r"^[A-Z]{3}$")
 
 
-# â”€â”€ Global error handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-
-from fastapi.responses import JSONResponse as _JSONResponse
-from starlette.exceptions import HTTPException as StarletteHTTPException
-from spectra.cycles import (
-    CYCLE_MODE_FIXED,
-    DEFAULT_CYCLE_RULE,
-    DEFAULT_CYCLE_START_DAY,
-    MAX_CYCLE_START_DAY,
-    VALID_CYCLE_MODES,
-    cycle_start_for,
-    cycle_window_for,
-    format_cycle_label,
-    next_cycle_start,
-    parse_cycle_rule,
-    normalize_cycle_start_day,
-    parse_iso_date,
-    serialize_cycle_rule,
-)
-from spectra.db import BookmarkDB
-from spectra.ml_classifier import build_seed_data
-from spectra.recurring import detect_recurring_kind
-from spectra.rules import VALID_RULE_TYPES, normalize_rule_type
-
-logger = logging.getLogger("spectra.web")
-
-_HERE = Path(__file__).parent
-_TEMPLATES = _HERE / "templates"
-_STATIC = _HERE / "static"
-
-app = FastAPI(title="Spectra Dashboard", docs_url=None, redoc_url=None)
-app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
-templates = Jinja2Templates(directory=str(_TEMPLATES))
-
-_THEME_SETTING_KEY = "theme_preference"
-_CYCLE_RULE_SETTING_KEY = "cycle_start_day"
-_BASE_CURRENCY_SETTING_KEY = "base_currency"
-_VALID_THEME_PREFERENCES = {"auto", "light", "dark"}
-_VALID_SUMMARY_SCOPES = {"cycle", "90d", "ytd"}
-_CURRENCY_CODE_RE = re.compile(r"^[A-Z]{3}$")
-
-
-# â”€â”€ Global error handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Global error handler ──────────────────────────────────────────────
 
 
 from fastapi.responses import JSONResponse as _JSONResponse
@@ -547,37 +514,45 @@ def _build_summary_insights(
 # â”€â”€ Pages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
+def _serve_react_or_template(request: Request, template_name: str):
+    from fastapi.responses import FileResponse
+    index_path = _DIST_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
+    return templates.TemplateResponse(request, template_name, _template_context(request))
+
+
 @app.get("/", response_class=HTMLResponse)
 def page_dashboard(request: Request):
     if (redirect := _setup_redirect_if_needed(request)):
         return redirect
-    return templates.TemplateResponse(request, "dashboard.html", _template_context(request))
+    return _serve_react_or_template(request, "dashboard.html")
 
 
 @app.get("/transactions", response_class=HTMLResponse)
 def page_transactions(request: Request):
     if (redirect := _setup_redirect_if_needed(request)):
         return redirect
-    return templates.TemplateResponse(request, "transactions.html", _template_context(request))
+    return _serve_react_or_template(request, "transactions.html")
 
 
 @app.get("/upload", response_class=HTMLResponse)
 def page_upload(request: Request):
     if (redirect := _setup_redirect_if_needed(request)):
         return redirect
-    return templates.TemplateResponse(request, "upload.html", _template_context(request))
+    return _serve_react_or_template(request, "upload.html")
 
 
 @app.get("/settings", response_class=HTMLResponse)
 def page_settings(request: Request):
-    return templates.TemplateResponse(request, "settings.html", _template_context(request))
+    return _serve_react_or_template(request, "settings.html")
 
 
 @app.get("/subscriptions", response_class=HTMLResponse)
 def page_subscriptions(request: Request):
     if (redirect := _setup_redirect_if_needed(request)):
         return redirect
-    return templates.TemplateResponse(request, "subscriptions.html", _template_context(request))
+    return _serve_react_or_template(request, "subscriptions.html")
 
 
 # â”€â”€ API: Dashboard Summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1562,14 +1537,14 @@ async def api_confirm(request: Request):
 def page_budget(request: Request):
     if (redirect := _setup_redirect_if_needed(request)):
         return redirect
-    return templates.TemplateResponse(request, "budget.html", _template_context(request))
+    return _serve_react_or_template(request, "budget.html")
 
 
 @app.get("/trends", response_class=HTMLResponse)
 def page_trends(request: Request):
     if (redirect := _setup_redirect_if_needed(request)):
         return redirect
-    return templates.TemplateResponse(request, "trends.html", _template_context(request))
+    return _serve_react_or_template(request, "trends.html")
 
 
 # â”€â”€ API: Budget â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
