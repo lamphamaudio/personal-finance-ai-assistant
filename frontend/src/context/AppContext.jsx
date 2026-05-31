@@ -1,5 +1,11 @@
-import React, { createContext, useState, useEffect, useContext } from 'react';
-import { getSettings, updatePreferences } from '../api/services';
+import { createContext, useState, useEffect, useContext, useCallback, useRef } from 'react';
+import {
+  getCurrentUser,
+  getSettings,
+  loginDemoUser,
+  logout,
+  updatePreferences,
+} from '../api/services';
 
 const AppContext = createContext();
 
@@ -20,10 +26,16 @@ export const AppProvider = ({ children }) => {
   const [currency, setCurrency] = useState('EUR');
   const [preferences, setPreferences] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState(null);
   const [toasts, setToasts] = useState([]);
 
   // Toast handler
-  const showToast = (message, type = 'success') => {
+  const removeToast = useCallback((id) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const showToast = useCallback((message, type = 'success') => {
     const id = Date.now() + Math.random().toString(36).substr(2, 9);
     setToasts((prev) => [...prev, { id, message, type }]);
     
@@ -31,11 +43,7 @@ export const AppProvider = ({ children }) => {
     setTimeout(() => {
       removeToast(id);
     }, 4000);
-  };
-
-  const removeToast = (id) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  };
+  }, [removeToast]);
 
   // Fetch preferences and settings
   const refreshPreferences = async () => {
@@ -56,7 +64,33 @@ export const AppProvider = ({ children }) => {
     }
   };
 
+  const refreshAuth = async () => {
+    setAuthLoading(true);
+    try {
+      const data = await getCurrentUser();
+      setCurrentUser(data.user);
+    } catch {
+      setCurrentUser(null);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const loginAsDemoUser = async (userId) => {
+    const data = await loginDemoUser(userId);
+    setCurrentUser(data.user);
+    showToast('Logged in');
+    return data.user;
+  };
+
+  const logoutCurrentUser = async () => {
+    await logout();
+    setCurrentUser(null);
+    showToast('Logged out');
+  };
+
   useEffect(() => {
+    refreshAuth();
     refreshPreferences();
   }, []);
 
@@ -103,6 +137,35 @@ export const AppProvider = ({ children }) => {
     }
   }, [themePreference]);
 
+  const apiCacheRef = useRef({});
+
+  const swrFetch = useCallback(async (key, fetchFn, onData, onError) => {
+    // 1. Immediately return cached data if available
+    const cached = apiCacheRef.current[key];
+    if (cached) {
+      onData(cached);
+    }
+
+    // 2. Fetch fresh data in the background
+    try {
+      const freshData = await fetchFn();
+      const freshStr = JSON.stringify(freshData);
+      const cachedStr = cached ? JSON.stringify(cached) : null;
+
+      // 3. Only update if data has changed or was empty
+      if (freshStr !== cachedStr) {
+        apiCacheRef.current[key] = freshData;
+        onData(freshData);
+      }
+    } catch (err) {
+      if (onError) {
+        onError(err);
+      } else {
+        console.error(`SWR fetch failed for key ${key}:`, err);
+      }
+    }
+  }, []);
+
   return (
     <AppContext.Provider
       value={{
@@ -114,9 +177,15 @@ export const AppProvider = ({ children }) => {
         preferences,
         refreshPreferences,
         loading,
+        authLoading,
+        currentUser,
+        refreshAuth,
+        loginAsDemoUser,
+        logoutCurrentUser,
         toasts,
         showToast,
-        removeToast
+        removeToast,
+        swrFetch
       }}
     >
       {children}

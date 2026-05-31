@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import { useFileUploader } from '../hooks/useSSE';
+import { useBankImporter } from '../hooks/useSSE';
 import { getCategoryOptions, confirmImport } from '../api/services';
 
 export default function Upload() {
   const { currency, showToast } = useApp();
   const navigate = useNavigate();
-  const fileInputRef = useRef(null);
+  const importStartedRef = useRef(false);
   
   // Custom SSE Uploader hook
   const {
@@ -16,15 +16,15 @@ export default function Upload() {
     step,
     error,
     result,
-    uploadFile,
+    importBank,
     reset: resetUpload
-  } = useFileUploader();
+  } = useBankImporter();
 
   // Review & Edit state
   const [previewData, setPreviewData] = useState([]);
   const [categories, setCategories] = useState([]);
-  const [dragOver, setDragOver] = useState(false);
   const [saving, setSaving] = useState(false);
+
 
   // Fetch all known category options for selects
   useEffect(() => {
@@ -41,11 +41,11 @@ export default function Upload() {
 
   // Sync result from uploader hook with page local preview state
   useEffect(() => {
-    if (result && result.transactions) {
+    if (result && result.transactions && previewData.length === 0) {
       setPreviewData(result.transactions);
       showToast(result.message || 'Tải lên hoàn tất, đang chuẩn bị xem trước.');
     }
-  }, [result, showToast]);
+  }, [result, showToast, previewData.length]);
 
   // Show SSE error in toast
   useEffect(() => {
@@ -54,35 +54,10 @@ export default function Upload() {
     }
   }, [error, showToast]);
 
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    setDragOver(true);
-  };
-
-  const handleDragLeave = () => {
-    setDragOver(false);
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    setDragOver(false);
-    if (e.dataTransfer.files.length) {
-      uploadFile(e.dataTransfer.files[0]);
-    }
-  };
-
-  const handleFileChange = (e) => {
-    if (e.target.files.length) {
-      uploadFile(e.target.files[0]);
-    }
-  };
-
   const cancelPreview = () => {
     setPreviewData([]);
     resetUpload();
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+    importStartedRef.current = true;
   };
 
   // Inline edit handlers
@@ -199,57 +174,45 @@ export default function Upload() {
       </div>
 
       {previewData.length === 0 && (
-        <section className="workflow-steps" aria-label="Tải lên workflow">
+        <section className="workflow-steps" aria-label="Bank import workflow">
           <article className="workflow-step">
             <span className="workflow-step-number">1</span>
             <div>
-              <h3>Tải tệp lên</h3>
-              <p>Hỗ trợ kéo thả sao kê các định dạng CSV, PDF và OFX.</p>
+              <h3>Nhập từ Bank Simulator</h3>
+              <p>Spectra tự động lấy dữ liệu giao dịch từ Bank Simulator theo tài khoản ngân hàng đang kết nối.</p>
             </div>
           </article>
           <article className="workflow-step">
             <span className="workflow-step-number">2</span>
             <div>
-              <h3>Duyệt gợi ý AI</h3>
-              <p>Kiểm tra và sửa nhanh nơi giao dịch, danh mục chi tiêu trực tiếp.</p>
+              <h3>Duyệt gợi ý từ AI</h3>
+              <p>Kiểm tra và tinh chỉnh nhanh nơi giao dịch, danh mục chi tiêu được phân loại tự động bởi trí tuệ nhân tạo.</p>
             </div>
           </article>
           <article className="workflow-step">
             <span className="workflow-step-number">3</span>
             <div>
-              <h3>Lưu với tự tin</h3>
-              <p>Spectra sẽ học cách phân loại từ phản hồi của bạn để nâng cấp độ chính xác cho lần sau.</p>
+              <h3>Lưu & Huấn luyện</h3>
+              <p>Lưu giao dịch vào lịch sử. Spectra sẽ ghi nhớ các phản hồi để tự động phân loại chính xác hơn trong tương lai.</p>
             </div>
           </article>
         </section>
       )}
 
-      {/* Drag & Drop Zone */}
       {previewData.length === 0 && !uploading && (
-        <div 
-          className={`upload-zone ${dragOver ? 'drag-over' : ''}`} 
-          id="uploadZone" 
-          onClick={() => fileInputRef.current?.click()}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-        >
+        <div className="upload-zone" id="uploadZone">
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"
             strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.4, marginBottom: '12px' }}>
-            <polyline points="16 16 12 12 8 16" />
-            <line x1="12" y1="12" x2="12" y2="21" />
-            <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
+            <path d="M3 6h18" />
+            <path d="M3 12h18" />
+            <path d="M3 18h18" />
+            <path d="M7 6v12" />
           </svg>
-          <h3>Nhấp hoặc kéo thả sao kê ngân hàng vào đây</h3>
-          <p>Định dạng tệp hỗ trợ: CSV, PDF và OFX</p>
-          <input 
-            type="file" 
-            id="fileInput" 
-            ref={fileInputRef}
-            accept=".csv,.pdf,.ofx" 
-            style={{ display: 'none' }}
-            onChange={handleFileChange}
-          />
+          <h3>Nhập giao dịch từ Bank Simulator</h3>
+          <p>Bấm nút bên dưới để đồng bộ và tải các giao dịch mới nhất từ tài khoản ngân hàng của bạn.</p>
+          <button className="btn btn-primary" type="button" onClick={importBank}>
+            Tải các giao dịch mới
+          </button>
         </div>
       )}
 

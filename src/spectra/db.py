@@ -19,12 +19,14 @@ _POOLS: dict[str, Any] = {}
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS app_seen_transactions (
     tx_id       text PRIMARY KEY,
+    user_id     text NOT NULL DEFAULT '',
     source      text NOT NULL,
     seen_at     timestamptz NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS app_tx_history (
     tx_id       text PRIMARY KEY,
+    user_id     text NOT NULL DEFAULT '',
     date        date NOT NULL,
     clean_name  text NOT NULL,
     amount      numeric NOT NULL,
@@ -219,6 +221,7 @@ class BookmarkDB:
         if url not in _INITIALIZED_DATABASE_URLS:
             self._conn.executescript(_SCHEMA)
             self._conn.commit()
+            self._migrate()
             _INITIALIZED_DATABASE_URLS.add(url)
         logger.debug("Postgres bookmark DB ready")
 
@@ -229,6 +232,9 @@ class BookmarkDB:
         for statement in (
             "ALTER TABLE app_tx_history ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT 'Chưa phân loại'",
             "ALTER TABLE app_tx_history ADD COLUMN IF NOT EXISTS original_description text NOT NULL DEFAULT ''",
+            "ALTER TABLE app_tx_history ADD COLUMN IF NOT EXISTS user_id text NOT NULL DEFAULT ''",
+            "ALTER TABLE app_seen_transactions ADD COLUMN IF NOT EXISTS user_id text NOT NULL DEFAULT ''",
+            "CREATE INDEX IF NOT EXISTS idx_app_tx_history_user_id ON app_tx_history (user_id)",
         ):
             self._conn.execute(statement)
 
@@ -246,10 +252,11 @@ class BookmarkDB:
             self._conn.execute("UPDATE app_learning_feedback SET category = %s WHERE category = %s", (new, old))
         self._conn.commit()
 
-    def is_seen(self, tx_id: str) -> bool:
+    def is_seen(self, tx_id: str, user_id: str = "") -> bool:
         """Return True if this transaction ID was already processed."""
         row = self._conn.execute(
-            "SELECT 1 FROM app_seen_transactions WHERE tx_id = %s", (tx_id,)
+            "SELECT 1 FROM app_seen_transactions WHERE tx_id = %s AND user_id = %s",
+            (tx_id, str(user_id or "")),
         ).fetchone()
         return row is not None
 
@@ -261,24 +268,29 @@ class BookmarkDB:
             """
             INSERT INTO app_seen_transactions (tx_id, source, seen_at)
             VALUES (%s, %s, %s)
-            ON CONFLICT (tx_id) DO NOTHING
+            ON CONFLICT (tx_id) DO UPDATE SET
+                source = EXCLUDED.source,
+                seen_at = EXCLUDED.seen_at
             """,
             (tx_id, source, datetime.now(timezone.utc)),
         )
         self._conn.commit()
 
-    def mark_seen_batch(self, tx_ids: list[str], source: str = "CSV") -> None:
+    def mark_seen_batch(self, tx_ids: list[str], source: str = "CSV", user_id: str = "") -> None:
         """Record a batch of transaction IDs as processed."""
         from datetime import datetime, timezone
 
         now = datetime.now(timezone.utc)
         self._conn.executemany(
             """
-            INSERT INTO app_seen_transactions (tx_id, source, seen_at)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (tx_id) DO NOTHING
+            INSERT INTO app_seen_transactions (tx_id, user_id, source, seen_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (tx_id) DO UPDATE SET
+                user_id = EXCLUDED.user_id,
+                source = EXCLUDED.source,
+                seen_at = EXCLUDED.seen_at
             """,
-            [(tx_id, source, now) for tx_id in tx_ids],
+            [(tx_id, str(user_id or ""), source, now) for tx_id in tx_ids],
         )
         self._conn.commit()
 
@@ -286,9 +298,10 @@ class BookmarkDB:
         """Save a batch of parsed and ML-categorised transactions to history."""
         self._conn.executemany(
             """
-            INSERT INTO app_tx_history (tx_id, date, clean_name, amount, category, original_description)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO app_tx_history (tx_id, user_id, date, clean_name, amount, category, original_description)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (tx_id) DO UPDATE SET
+                user_id = EXCLUDED.user_id,
                 date = EXCLUDED.date,
                 clean_name = EXCLUDED.clean_name,
                 amount = EXCLUDED.amount,
@@ -298,6 +311,7 @@ class BookmarkDB:
             [
                 (
                     t.id,
+                    str(getattr(t, "user_id", "") or ""),
                     t.date,
                     t.clean_name,
                     t.amount,
@@ -307,7 +321,8 @@ class BookmarkDB:
                 for t in transactions
             ],
         )
-        self.mark_seen_batch([t.id for t in transactions])
+        user_id = str(getattr(transactions[0], "user_id", "") or "") if transactions else ""
+        self.mark_seen_batch([t.id for t in transactions], user_id=user_id)
 
     def get_merchant_history(self) -> dict[str, list[tuple[str, float]]]:
         """Fetch all historical transactions grouped by merchant clean_name."""

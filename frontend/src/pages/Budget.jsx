@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { getBudget, updateBudgetLimit } from '../api/services';
 
 export default function Budget() {
-  const { currency, showToast } = useApp();
+  const { currency, showToast, swrFetch } = useApp();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -12,21 +12,25 @@ export default function Budget() {
   const [editing, setEditing] = useState(null);
   const [editValue, setEditValue] = useState('');
 
-  const fetchBudget = async () => {
-    setLoading(true);
-    try {
-      const result = await getBudget();
-      setData(result);
-    } catch (err) {
-      console.error('Failed to load budget data:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const fetchBudget = useCallback(() => {
+    swrFetch(
+      'budget',
+      getBudget,
+      (result) => {
+        setData(result);
+        setLoading(false);
+      },
+      (err) => {
+        console.error('Failed to load budget data:', err);
+        setLoading(false);
+      }
+    );
+  }, [swrFetch]);
 
   useEffect(() => {
+    setLoading(true);
     fetchBudget();
-  }, []);
+  }, [fetchBudget]);
 
   const formatCurrency = (amount) => {
     try {

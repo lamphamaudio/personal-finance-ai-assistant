@@ -40,6 +40,7 @@ class CategorisedTransaction(BaseModel):
     category_confidence: float | None = None
     category_suggestions: list[CategorySuggestion] = Field(default_factory=list)
     needs_review: bool = False
+    user_id: str = ""
 
 
 _SYSTEM_PROMPT = """\

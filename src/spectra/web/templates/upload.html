@@ -13,12 +13,12 @@
     </div>
 </div>
 
-<section class="workflow-steps" aria-label="Tải lên workflow">
+<section class="workflow-steps" aria-label="Bank import workflow">
     <article class="workflow-step">
         <span class="workflow-step-number">1</span>
         <div>
-            <h3>Drop a file</h3>
-            <p>CSV, PDF, or OFX exports all work here.</p>
+            <h3>Import from Bank Simulator</h3>
+            <p>Spectra reads transaction JSON from the connected bank account automatically.</p>
         </div>
     </article>
     <article class="workflow-step">
@@ -31,22 +31,23 @@
     <article class="workflow-step">
         <span class="workflow-step-number">3</span>
         <div>
-            <h3>Lưu with confidence</h3>
+            <h3>Save with confidence</h3>
             <p>Teach Spectra while you save, so the next import needs less work.</p>
         </div>
     </article>
 </section>
 
-<div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+<div class="upload-zone" id="uploadZone" onclick="importBankTransactions()">
     <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
         stroke-linecap="round" stroke-linejoin="round" style="opacity:.4;margin-bottom:12px;">
-        <polyline points="16 16 12 12 8 16" />
-        <line x1="12" y1="12" x2="12" y2="21" />
-        <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
+        <path d="M3 6h18" />
+        <path d="M3 12h18" />
+        <path d="M3 18h18" />
+        <path d="M7 6v12" />
     </svg>
-    <h3>Drop your bank export here</h3>
-    <p>Supported files: CSV, PDF, and OFX</p>
-    <input type="file" id="fileInput" accept=".csv,.pdf,.ofx">
+    <h3>Import transactions from Bank Simulator</h3>
+    <p>Data loads automatically when this page opens.</p>
+    <button class="btn btn-primary" type="button">Import again</button>
 </div>
 
 <!-- Real progress UI (hidden until upload starts) -->
@@ -116,7 +117,6 @@
     let previewCategories = [];
 
     const zone = document.getElementById('uploadZone');
-    const fileInput = document.getElementById('fileInput');
 
     function escapeHtml(value) {
         return String(value ?? '')
@@ -292,39 +292,28 @@
         }
     }
 
-    // Drag & drop
-    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
-    zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
-    zone.addEventListener('drop', e => {
-        e.preventDefault();
-        zone.classList.remove('drag-over');
-        if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
-    });
-
-    fileInput.addEventListener('change', () => {
-        if (fileInput.files.length) uploadFile(fileInput.files[0]);
-    });
-
     function setProgress(pct, step) {
         document.getElementById('progressFill').style.width = pct + '%';
         document.getElementById('pctLabel').textContent = pct + '%';
         document.getElementById('stepLabel').textContent = step;
     }
 
-    async function uploadFile(file) {
+    async function importBankTransactions() {
         zone.style.display = 'none';
         const proc = document.getElementById('processing');
         proc.style.display = 'block';
-        setProgress(0, 'Connecting...');
-
-        const form = new FormData();
-        form.append('file', file);
+        setProgress(0, 'Connecting to Bank Simulator...');
 
         try {
-            const res = await fetch('/api/upload', { method: 'POST', body: form });
+            const res = await fetch('/api/import-bank', { method: 'POST' });
 
             if (!res.ok || !res.body) {
-                throw new Error(`Server error ${res.status}`);
+                let message = `Server error ${res.status}`;
+                try {
+                    const data = await res.json();
+                    message = data.error || message;
+                } catch {}
+                throw new Error(message);
             }
 
             const reader = res.body.getReader();
@@ -336,9 +325,8 @@
                 if (done) break;
 
                 buffer += decoder.decode(value, { stream: true });
-                // SSE events are separated by \n\n
                 const parts = buffer.split('\n\n');
-                buffer = parts.pop(); // keep incomplete trailing chunk
+                buffer = parts.pop();
 
                 for (const part of parts) {
                     const dataLine = part.split('\n').find(l => l.startsWith('data: '));
@@ -375,7 +363,7 @@
         } catch (err) {
             document.getElementById('processing').style.display = 'none';
             zone.style.display = '';
-            showToast('Tải lên failed: ' + err.message, 'error');
+            showToast('Bank import failed: ' + err.message, 'error');
         }
     }
 
@@ -477,7 +465,6 @@
         document.getElementById('previewSection').classList.remove('visible');
         document.getElementById('uploadZone').style.display = '';
         previewData = [];
-        fileInput.value = '';
         updatePreviewSummary();
     }
 
@@ -502,8 +489,8 @@
             btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Confirm & Lưu`;
         }
     }
-
     loadPreviewCategories();
+    importBankTransactions();
 </script>
 {% endblock %}
 

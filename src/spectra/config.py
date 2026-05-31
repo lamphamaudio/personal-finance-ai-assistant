@@ -74,6 +74,14 @@ class Settings(BaseSettings):
     # ── Behaviour ────────────────────────────────────────────────
     log_level: str = "INFO"
 
+    # Demo Auth / SSO
+    sso_shared_secret: str = "change-me-for-local-demo"
+    spectra_base_url: str = "http://localhost:8081"
+    bank_simulator_base_url: str = "http://localhost:8000"
+    session_cookie_secure: bool = False
+    session_ttl_seconds: int = 28_800
+    sso_token_ttl_seconds: int = 300
+
     # ── Validation ───────────────────────────────────────────────
     @model_validator(mode="after")
     def _check_required_secrets(self) -> "Settings":

@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { getSubscriptions } from '../api/services';
 
 export default function Subscriptions() {
-  const { currency } = useApp();
+  const { currency, swrFetch } = useApp();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   
@@ -11,21 +11,25 @@ export default function Subscriptions() {
   const [sortKey, setSortKey] = useState('monthly_estimate');
   const [sortDirection, setSortDirection] = useState('desc');
 
-  const fetchSubscriptions = async () => {
-    setLoading(true);
-    try {
-      const result = await getSubscriptions();
-      setData(result);
-    } catch (err) {
-      console.error('Failed to load subscriptions:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const fetchSubscriptions = useCallback(() => {
+    swrFetch(
+      'subscriptions',
+      getSubscriptions,
+      (result) => {
+        setData(result);
+        setLoading(false);
+      },
+      (err) => {
+        console.error('Failed to load subscriptions:', err);
+        setLoading(false);
+      }
+    );
+  }, [swrFetch]);
 
   useEffect(() => {
+    setLoading(true);
     fetchSubscriptions();
-  }, []);
+  }, [fetchSubscriptions]);
 
   // UI Helpers
   const formatCurrency = (amount) => {

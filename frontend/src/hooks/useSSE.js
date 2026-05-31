@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
-import { uploadFileRaw } from '../api/services';
+import { importBankRaw } from '../api/services';
 
-export const useFileUploader = () => {
+export const useBankImporter = () => {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [step, setStep] = useState('');
@@ -16,18 +16,25 @@ export const useFileUploader = () => {
     setResult(null);
   }, []);
 
-  const uploadFile = useCallback(async (file) => {
+  const importBank = useCallback(async () => {
     setUploading(true);
     setProgress(0);
-    setStep('Connecting...');
+    setStep('Connecting to Bank Simulator...');
     setError(null);
     setResult(null);
 
     try {
-      const response = await uploadFileRaw(file);
+      const response = await importBankRaw();
 
       if (!response.ok || !response.body) {
-        throw new Error(`Server error: ${response.status} ${response.statusText}`);
+        let message = `Server error: ${response.status} ${response.statusText}`;
+        try {
+          const data = await response.json();
+          message = data.error || message;
+        } catch {
+          // Keep the generic server error.
+        }
+        throw new Error(message);
       }
 
       const reader = response.body.getReader();
@@ -83,8 +90,8 @@ export const useFileUploader = () => {
         }
       }
     } catch (err) {
-      console.error('File upload stream parsing error:', err);
-      setError(err.message || 'Upload failed due to connection issues.');
+      console.error('Bank import stream parsing error:', err);
+      setError(err.message || 'Bank import failed due to connection issues.');
       setUploading(false);
     }
   }, []);
@@ -95,7 +102,9 @@ export const useFileUploader = () => {
     step,
     error,
     result,
-    uploadFile,
+    importBank,
     reset
   };
 };
+
+export const useFileUploader = useBankImporter;

@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 import logging
 import re
+import secrets
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -70,6 +76,173 @@ _BASE_CURRENCY_SETTING_KEY = "base_currency"
 _VALID_THEME_PREFERENCES = {"auto", "light", "dark"}
 _VALID_SUMMARY_SCOPES = {"cycle", "90d", "ytd"}
 _CURRENCY_CODE_RE = re.compile(r"^[A-Z]{3}$")
+_SESSION_COOKIE = "spectra_session"
+_SSO_ISSUER = "spectra"
+_SSO_AUDIENCE = "bank_simulator"
+_BANK_SSO_ISSUER = "bank_simulator"
+_BANK_SSO_AUDIENCE = "spectra"
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _sign_payload(payload: dict[str, Any], secret: str) -> str:
+    body = _b64url_encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+    signature = hmac.new(secret.encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest()
+    return f"{body}.{_b64url_encode(signature)}"
+
+
+def _verify_signed_payload(token: str, secret: str) -> dict[str, Any] | None:
+    try:
+        body, signature = token.split(".", 1)
+    except ValueError:
+        return None
+    expected = hmac.new(secret.encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest()
+    try:
+        provided = _b64url_decode(signature)
+    except Exception:
+        return None
+    if not hmac.compare_digest(expected, provided):
+        return None
+    try:
+        return json.loads(_b64url_decode(body))
+    except Exception:
+        return None
+
+
+def _session_payload(user_id: str, settings: Settings) -> dict[str, Any]:
+    now = int(time.time())
+    return {
+        "sub": user_id,
+        "iat": now,
+        "exp": now + int(settings.session_ttl_seconds),
+        "nonce": secrets.token_urlsafe(12),
+    }
+
+
+def _read_session_user_id(request: Request) -> str | None:
+    settings = load_settings()
+    token = request.cookies.get(_SESSION_COOKIE)
+    if not token:
+        return None
+    payload = _verify_signed_payload(token, settings.sso_shared_secret)
+    if not payload or int(payload.get("exp", 0)) < int(time.time()):
+        return None
+    user_id = str(payload.get("sub") or "").strip()
+    return user_id or None
+
+
+def _set_session_cookie(response: Response, user_id: str, settings: Settings) -> None:
+    response.set_cookie(
+        _SESSION_COOKIE,
+        _sign_payload(_session_payload(user_id, settings), settings.sso_shared_secret),
+        max_age=int(settings.session_ttl_seconds),
+        httponly=True,
+        secure=bool(settings.session_cookie_secure),
+        samesite="lax",
+    )
+
+
+def _clear_session_cookie(response: Response, settings: Settings) -> None:
+    response.delete_cookie(
+        _SESSION_COOKIE,
+        httponly=True,
+        secure=bool(settings.session_cookie_secure),
+        samesite="lax",
+    )
+
+
+def _build_sso_token(user_id: str, settings: Settings) -> str:
+    now = int(time.time())
+    return _sign_payload(
+        {
+            "sub": user_id,
+            "iss": _SSO_ISSUER,
+            "aud": _SSO_AUDIENCE,
+            "iat": now,
+            "exp": now + int(settings.sso_token_ttl_seconds),
+            "nonce": secrets.token_urlsafe(16),
+        },
+        settings.sso_shared_secret,
+    )
+
+
+def _verify_bank_sso_token(token: str, settings: Settings) -> str | None:
+    payload = _verify_signed_payload(token, settings.sso_shared_secret)
+    if not payload:
+        return None
+    if payload.get("iss") != _BANK_SSO_ISSUER or payload.get("aud") != _BANK_SSO_AUDIENCE:
+        return None
+    if int(payload.get("exp", 0)) < int(time.time()):
+        return None
+    user_id = str(payload.get("sub") or "").strip()
+    return user_id or None
+
+
+def _fetch_demo_users(limit: int = 100) -> list[dict[str, Any]]:
+    with _get_db() as db:
+        rows = db._conn.execute(
+            """
+            SELECT
+                ba.user_id,
+                COALESCE(up.persona_type, 'Unknown') AS persona_type,
+                ba.account_number,
+                ba.bank_name,
+                ba.balance
+            FROM bank_accounts ba
+            LEFT JOIN user_personas up ON ba.user_id = up.user_id
+            ORDER BY ba.balance DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "user_id": str(user_id),
+            "persona_type": str(persona_type),
+            "account_number": str(account_number),
+            "bank_name": str(bank_name),
+            "current_balance": float(balance or 0),
+        }
+        for user_id, persona_type, account_number, bank_name, balance in rows
+    ]
+
+
+def _fetch_demo_user(user_id: str) -> dict[str, Any] | None:
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return None
+    with _get_db() as db:
+        row = db._conn.execute(
+            """
+            SELECT
+                ba.user_id,
+                COALESCE(up.persona_type, 'Unknown') AS persona_type,
+                ba.account_number,
+                ba.bank_name,
+                ba.balance
+            FROM bank_accounts ba
+            LEFT JOIN user_personas up ON ba.user_id = up.user_id
+            WHERE ba.user_id = ?
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+    if not row:
+        return None
+    found_user_id, persona_type, account_number, bank_name, balance = row
+    return {
+        "user_id": str(found_user_id),
+        "persona_type": str(persona_type),
+        "account_number": str(account_number),
+        "bank_name": str(bank_name),
+        "current_balance": float(balance or 0),
+    }
 
 
 # ── Global error handler ──────────────────────────────────────────────
@@ -522,8 +695,103 @@ def _serve_react_or_template(request: Request, template_name: str):
     return templates.TemplateResponse(request, template_name, _template_context(request))
 
 
+@app.get("/login", response_class=HTMLResponse)
+def page_login(request: Request):
+    return _serve_react_or_template(request, "dashboard.html")
+
+
+@app.get("/api/auth/me")
+def api_auth_me(request: Request):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    user = _fetch_demo_user(user_id)
+    if not user:
+        response = JSONResponse({"error": "Session user no longer exists"}, status_code=401)
+        _clear_session_cookie(response, load_settings())
+        return response
+    return {"user": user}
+
+
+@app.get("/api/auth/demo-users")
+def api_auth_demo_users():
+    return {"users": _fetch_demo_users()}
+
+
+@app.post("/api/auth/login")
+async def api_auth_login(request: Request):
+    body = await request.json()
+    user_id = str(body.get("user_id") or "").strip()
+    user = _fetch_demo_user(user_id)
+    if not user:
+        return JSONResponse({"error": "Unknown demo user"}, status_code=400)
+
+    settings = load_settings()
+    response = JSONResponse({"ok": True, "user": user})
+    _set_session_cookie(response, user["user_id"], settings)
+    return response
+
+
+@app.post("/api/auth/logout")
+def api_auth_logout():
+    settings = load_settings()
+    response = JSONResponse({"ok": True})
+    _clear_session_cookie(response, settings)
+    return response
+
+
+@app.get("/sso/bank")
+def sso_bank(request: Request):
+    settings = load_settings()
+    bank_base = settings.bank_simulator_base_url.rstrip("/")
+    spectra_base = settings.spectra_base_url.rstrip("/")
+    return_to = f"{spectra_base}/sso/bank/callback"
+    from urllib.parse import urlencode
+
+    return RedirectResponse(url=f"{bank_base}/sso/entry?{urlencode({'return_to': return_to})}", status_code=303)
+
+
+@app.get("/sso/bank/callback")
+def sso_bank_callback(token: str = Query(...)):
+    settings = load_settings()
+    user_id = _verify_bank_sso_token(token, settings)
+    if not user_id:
+        return JSONResponse({"error": "Invalid Bank Simulator SSO token"}, status_code=401)
+
+    user = _fetch_demo_user(user_id)
+    if not user:
+        return JSONResponse({"error": "Unknown SSO user"}, status_code=401)
+
+    response = RedirectResponse(url="/", status_code=303)
+    _set_session_cookie(response, user_id, settings)
+    return response
+
+
 @app.get("/", response_class=HTMLResponse)
 def page_dashboard(request: Request):
+    if (redirect := _setup_redirect_if_needed(request)):
+        return redirect
+    return _serve_react_or_template(request, "dashboard.html")
+
+
+@app.get("/transactions", response_class=HTMLResponse)
+def page_transactions(request: Request):
+    if (redirect := _setup_redirect_if_needed(request)):
+        return redirect
+    return _serve_react_or_template(request, "transactions.html")
+
+
+@app.get("/upload", response_class=HTMLResponse)
+def page_upload(request: Request):
+    if (redirect := _setup_redirect_if_needed(request)):
+        return redirect
+    return _serve_react_or_template(request, "upload.html")
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def page_settings(request: Request):
+    return _serve_react_or_template(request, "settings.html")
+
     if (redirect := _setup_redirect_if_needed(request)):
         return redirect
     return _serve_react_or_template(request, "dashboard.html")
@@ -555,11 +823,11 @@ def page_subscriptions(request: Request):
     return _serve_react_or_template(request, "subscriptions.html")
 
 
-# â”€â”€ API: Dashboard Summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ————————————————— API: Dashboard Summary ——————————————————————————————————————
 
 
 @app.get("/api/summary")
-def api_summary(scope: str = Query("cycle")):
+def api_summary(request: Request, scope: str = Query("cycle")):
     """Return dashboard-level stats."""
     scope = (scope or "cycle").strip().lower()
     if scope not in _VALID_SUMMARY_SCOPES:
@@ -570,21 +838,24 @@ def api_summary(scope: str = Query("cycle")):
 
     preferences = _load_app_preferences()
     cycle_rule = preferences["cycle_rule"]
+    user_id = _read_session_user_id(request) or ""
 
     from datetime import date, timedelta
-
     today = date.today()
     if scope == "cycle":
         period_start, period_end = cycle_window_for(today, cycle_rule)
         scope_label = format_cycle_label(period_start, period_end)
+        query_start = period_start
     elif scope == "90d":
         period_end = today + timedelta(days=1)
         period_start = period_end - timedelta(days=90)
         scope_label = f"Last 90 days ({format_cycle_label(period_start, period_end)})"
+        query_start = period_start - timedelta(days=180)
     else:  # ytd
         period_start = date(today.year, 1, 1)
         period_end = today + timedelta(days=1)
         scope_label = f"Year to date ({format_cycle_label(period_start, period_end)})"
+        query_start = period_start
 
     burn_rate = (
         _build_cycle_burn_rate(
@@ -599,22 +870,15 @@ def api_summary(scope: str = Query("cycle")):
 
     with _get_db() as db:
         rows = db._conn.execute(
-            "SELECT date, clean_name, amount, category FROM app_tx_history ORDER BY date DESC"
+            "SELECT date, clean_name, amount, category FROM app_tx_history WHERE user_id = ? AND date >= ? ORDER BY date DESC",
+            (user_id, query_start),
         ).fetchall()
         budget_limits = db.get_budget_limits()
-
-    if not rows:
-        return {
-            "total_spent": 0, "total_income": 0, "subscriptions": 0,
-            "uncategorized": 0, "uncategorized_total": 0, "by_category": {}, "monthly": {},
-            "monthly_ranges": {}, "top_merchants": [], "current_cycle": _build_cycle_payload(cycle_rule),
-            "scope": scope, "scope_label": scope_label,
-            "selected_period": {"start": period_start.isoformat(), "end": period_end.isoformat(), "label": scope_label},
-            **preferences,
-            "has_data": False,
-            "burn_rate": burn_rate,
-            "insights": [],
-        }
+        uncat_row = db._conn.execute(
+            "SELECT COUNT(*) FROM app_tx_history WHERE user_id = ? AND category = ?",
+            (user_id, UNCATEGORIZED),
+        ).fetchone()
+        uncategorized_total = int(uncat_row[0] if uncat_row else 0)
 
     from collections import Counter, defaultdict
 
@@ -722,6 +986,7 @@ def api_summary(scope: str = Query("cycle")):
 
 @app.get("/api/transactions")
 def api_transactions(
+    request: Request,
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=10, le=200),
     category: str = Query("", alias="category"),
@@ -731,8 +996,9 @@ def api_transactions(
     date_to: str = Query(""),
 ):
     """Return paginated transactions from history with SQL-level filtering and paging."""
-    where_clauses = []
-    params = []
+    user_id = _read_session_user_id(request) or ""
+    where_clauses = ["user_id = ?"]
+    params = [user_id]
 
     if category:
         where_clauses.append("LOWER(category) = LOWER(?)")
@@ -761,8 +1027,8 @@ def api_transactions(
         total = int(count_row[0] if count_row else 0)
 
         # Count total uncategorized rows matching the same filter (except uncategorized_only filter)
-        uncat_where_clauses = []
-        uncat_params = []
+        uncat_where_clauses = ["user_id = ?"]
+        uncat_params = [user_id]
         if category:
             uncat_where_clauses.append("LOWER(category) = LOWER(?)")
             uncat_params.append(category)
@@ -916,12 +1182,13 @@ def api_categories():
 
 
 @app.get("/api/categories/options")
-def api_categories_options():
+def api_categories_options(request: Request):
     """Return all categories."""
+    user_id = _read_session_user_id(request) or ""
     with _get_db() as db:
         cats = db._conn.execute(
-            "SELECT DISTINCT category FROM app_tx_history WHERE category != ? ORDER BY category",
-            (UNCATEGORIZED,),
+            "SELECT DISTINCT category FROM app_tx_history WHERE user_id = ? AND category != ? ORDER BY category",
+            (user_id, UNCATEGORIZED),
         ).fetchall()
     known_cats = [normalize_category(row[0]) for row in cats]
     other_cats = [normalize_category(row[1]) for row in build_seed_data()]
@@ -1213,6 +1480,262 @@ async def api_reset_db(request: Request):
 # â”€â”€ API: Upload & Process â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
+def _bank_transaction_to_parsed(row: dict[str, Any], base_currency: str):
+    from spectra.csv_parser import ParsedTransaction
+
+    tx_type = str(row.get("transaction_type") or "").strip().lower()
+    amount = abs(float(row.get("amount") or 0))
+    if tx_type == "debit":
+        amount = -amount
+    elif tx_type != "credit":
+        amount = float(row.get("amount") or 0)
+
+    created_at = str(row.get("created_at") or "").strip()
+    tx_date = created_at[:10] if len(created_at) >= 10 else ""
+    if not tx_date:
+        raise ValueError(f"Bank transaction missing created_at date: {row.get('id')}")
+
+    merchant = str(row.get("merchant") or "").strip()
+    description = str(row.get("description") or "").strip()
+    category = str(row.get("category") or row.get("merchant_category") or "").strip()
+
+    import hashlib
+    raw_desc = description or merchant
+    raw_id = f"{tx_date}:{raw_desc}:{amount}"
+    txn_id = hashlib.sha1(raw_id.encode("utf-8")).hexdigest()
+
+    return ParsedTransaction(
+        id=txn_id,
+        date=tx_date,
+        amount=amount,
+        currency=base_currency,
+        raw_description=raw_desc,
+        statement_category=category,
+        counterpart=merchant,
+    )
+
+
+async def _fetch_bank_transactions(user_id: str, settings: Settings) -> list[dict[str, Any]]:
+    import httpx
+
+    bank_base = settings.bank_simulator_base_url.rstrip("/")
+    token = _build_sso_token(user_id, settings)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(
+            f"{bank_base}/transactions",
+            params={"user_id": user_id, "limit": 1000},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    if response.status_code == 401:
+        raise RuntimeError("Bank Simulator rejected Spectra authentication")
+    if response.status_code == 403:
+        raise RuntimeError("Bank Simulator refused access to this user's transactions")
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, list):
+        raise RuntimeError("Bank Simulator returned an unexpected transactions payload")
+    return data
+
+
+async def _stream_processed_transactions(
+    parsed: list[Any],
+    settings: Settings,
+    base_currency: str,
+    user_id: str = "",
+):
+    import asyncio
+    import json as _json
+
+    def evt(pct: int, step: str, **extra) -> str:
+        payload = _json.dumps({"pct": pct, "step": step, **extra})
+        return f"data: {payload}\n\n"
+
+    yield evt(25, "Checking for duplicates...")
+    await asyncio.sleep(0)
+    with _get_db() as db:
+        new_txns = [t for t in parsed if not db.is_seen(t.id, user_id=user_id)]
+        overrides = db.get_overrides()
+        category_rules = db.get_category_rules()
+        merchant_db = db.get_merchant_categories()
+        training_data = db.get_training_data()
+
+    if not new_txns:
+        yield evt(100, "All transactions already imported", done=True,
+                  transactions=[], message="All transactions already imported")
+        return
+
+    for t in new_txns:
+        setattr(t, "user_id", user_id)
+
+    from spectra.ai import CategorisedTransaction
+
+    pre_cat = []
+    to_process = []
+    override_count = 0
+    rule_count = 0
+    for t in new_txns:
+        od = t.raw_description
+        counterpart = str(getattr(t, "counterpart", "") or "")
+        if od in overrides:
+            pre_cat.append(CategorisedTransaction(
+                id=t.id, original_description=od,
+                clean_name=overrides[od]["clean_name"],
+                category=overrides[od]["category"],
+                amount=t.amount, currency=t.currency, date=t.date,
+            ))
+            override_count += 1
+            continue
+
+        from spectra.rules import first_matching_rule
+
+        matched_rule = first_matching_rule(
+            category_rules,
+            clean_name=counterpart or od,
+            raw_description=od,
+        )
+        if matched_rule:
+            pre_cat.append(CategorisedTransaction(
+                id=t.id,
+                original_description=od,
+                clean_name=counterpart or od,
+                category=str(matched_rule["category"]),
+                amount=t.amount,
+                currency=t.currency,
+                date=t.date,
+            ))
+            rule_count += 1
+        else:
+            to_process.append(t)
+
+    if override_count or rule_count:
+        yield evt(28, f"Applied local mappings: {override_count} overrides, {rule_count} rules")
+
+    categorised = list(pre_cat)
+
+    if to_process:
+        flat = [
+            {
+                "raw_description": t.raw_description,
+                "counterpart": getattr(t, "counterpart", ""),
+                "amount": t.amount,
+                "currency": t.currency,
+                "date": t.date,
+            }
+            for t in to_process
+        ]
+
+        if settings.ai_provider == "local":
+            from spectra.local_categorizer import categorise_local
+            from spectra.ml_classifier import train_classifier
+            ml_clf = train_classifier(training_data)
+            results = []
+            for i, row in enumerate(flat):
+                pct = 25 + int((i + 1) / len(flat) * 67)
+                yield evt(pct, f"Categorizing {i + 1} / {len(flat)}...")
+                await asyncio.sleep(0)
+                results.extend(categorise_local([row], merchant_db=merchant_db, ml_classifier=ml_clf))
+            categorised.extend(results)
+        else:
+            from spectra.ai import categorise
+            provider = settings.ai_provider
+            if provider == "gemini":
+                api_key, model = settings.gemini_api_key, settings.gemini_model
+            else:
+                api_key, model = settings.openai_api_key, settings.openai_model
+
+            for pct in range(30, 88, 5):
+                yield evt(pct, f"Waiting for {provider.title()} AI...")
+                await asyncio.sleep(0.4)
+
+            categorised.extend(categorise(flat, [], provider=provider,
+                                          api_key=api_key, model=model,
+                                          base_currency=base_currency))
+
+    yield evt(94, "Detecting recurring payments...")
+    await asyncio.sleep(0)
+    with _get_db() as db:
+        history = db.get_merchant_history()
+    from spectra.recurring import apply_recurring_tags
+    apply_recurring_tags(categorised, history)
+
+    yield evt(97, "Converting currencies...")
+    await asyncio.sleep(0)
+    from spectra.fx import convert_currency
+    for t in categorised:
+        if t.currency.upper() != base_currency:
+            orig_amt, orig_cur = t.amount, t.currency.upper()
+            t.amount = convert_currency(orig_amt, orig_cur, base_currency, t.date)
+            t.original_amount, t.original_currency = orig_amt, orig_cur
+            t.currency = base_currency
+
+    preview = []
+    for t in categorised:
+        row = {
+            "id": t.id,
+            "date": t.date,
+            "merchant": t.clean_name,
+            "category": t.category,
+            "amount": t.amount,
+            "currency": t.currency,
+            "recurring": t.recurring,
+            "original_description": t.original_description,
+        }
+        if getattr(t, "classification_source", ""):
+            row["classification_source"] = t.classification_source
+        if getattr(t, "category_confidence", None) is not None:
+            row["category_confidence"] = t.category_confidence
+        if getattr(t, "needs_review", False):
+            row["needs_review"] = True
+        if getattr(t, "category_suggestions", None):
+            row["category_suggestions"] = [
+                suggestion.model_dump() if hasattr(suggestion, "model_dump") else dict(suggestion)
+                for suggestion in t.category_suggestions
+            ]
+        preview.append(row)
+    yield evt(100, f"{len(preview)} transactions ready", done=True,
+              transactions=preview, message=f"{len(preview)} new transactions")
+
+
+@app.post("/api/import-bank")
+async def api_import_bank(request: Request):
+    import json as _json
+    from fastapi.responses import StreamingResponse as _SR
+
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    settings = load_settings()
+    with BookmarkDB(settings.database_url) as db:
+        if _requires_base_currency_setup(db, load_settings()):
+            return JSONResponse(
+                {"error": "Base currency not set. Open Settings and choose your base currency first."},
+                status_code=400,
+            )
+        base_currency = _resolve_base_currency(settings, db)
+
+    async def _stream():
+        def evt(pct: int, step: str, **extra) -> str:
+            payload = _json.dumps({"pct": pct, "step": step, **extra})
+            return f"data: {payload}\n\n"
+
+        try:
+            yield evt(5, "Connecting to Bank Simulator...")
+            rows = await _fetch_bank_transactions(user_id, settings)
+            yield evt(15, "Reading bank transactions...")
+            parsed = [_bank_transaction_to_parsed(row, base_currency) for row in rows]
+            async for chunk in _stream_processed_transactions(parsed, settings, base_currency, user_id=user_id):
+                yield chunk
+        except Exception as e:
+            logger.exception("Bank import stream error: %s", e)
+            yield f"data: {_json.dumps({'pct': 0, 'step': 'Error: ' + str(e), 'error': True})}\n\n"
+
+    return _SR(_stream(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    })
+
+
 @app.post("/api/upload")
 async def api_upload(file: UploadFile = File(...)):
     """Upload a supported file, parse & categorise, stream progress via SSE."""
@@ -1268,6 +1791,10 @@ async def api_upload(file: UploadFile = File(...)):
                     parsed = parse_ofx(tmp_path, currency=base_currency)
             finally:
                 Path(tmp_path).unlink(missing_ok=True)
+
+            async for chunk in _stream_processed_transactions(parsed, settings, base_currency):
+                yield chunk
+            return
 
             # â”€â”€ Phase 3: dedup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             yield evt(25, "Checking for duplicates...")
@@ -1447,6 +1974,7 @@ async def api_confirm(request: Request):
     """Confirm and save previously previewed transactions to the DB."""
     body = await request.json()
     transactions = body.get("transactions", [])
+    user_id = _read_session_user_id(request) or ""
 
     if not transactions:
         return {"ok": False, "message": "No transactions to save"}
@@ -1474,6 +2002,7 @@ async def api_confirm(request: Request):
                 amount=t["amount"], currency=t.get("currency", base_currency),
                 date=t["date"], recurring=normalize_recurring(t.get("recurring", ""), float(t["amount"])),
             )
+            setattr(ct, "user_id", user_id)
             cats.append(ct)
 
             apply_to_future = _coerce_bool(t.get("apply_to_future"), True)
@@ -1551,10 +2080,11 @@ def page_trends(request: Request):
 
 
 @app.get("/api/budget")
-def api_budget():
+def api_budget(request: Request):
     """Return per-category budget status for the current month."""
     preferences = _load_app_preferences()
     current_cycle = _build_cycle_payload(preferences["cycle_rule"])
+    user_id = _read_session_user_id(request) or ""
 
     with _get_db() as db:
         # All expense rows for the current financial cycle
@@ -1562,10 +2092,10 @@ def api_budget():
             """
             SELECT category, SUM(amount) as total
             FROM app_tx_history
-            WHERE amount < 0 AND date >= ? AND date < ?
+            WHERE user_id = ? AND amount < 0 AND date >= ? AND date < ?
             GROUP BY category
             """,
-            (current_cycle["start"], current_cycle["end"]),
+            (user_id, current_cycle["start"], current_cycle["end"]),
         ).fetchall()
 
         limits = db.get_budget_limits()
@@ -1574,10 +2104,10 @@ def api_budget():
         all_cats = db._conn.execute(
             """
             SELECT DISTINCT category FROM app_tx_history
-            WHERE category != ? AND amount < 0
+            WHERE user_id = ? AND category != ? AND amount < 0
             ORDER BY category
             """
-            , (UNCATEGORIZED,)
+            , (user_id, UNCATEGORIZED)
         ).fetchall()
 
     spent_by_cat: dict[str, float] = {cat: abs(total) for cat, total in rows}
@@ -1639,16 +2169,18 @@ async def api_update_budget(category: str, request: Request):
 
 
 @app.get("/api/trends")
-def api_trends():
+def api_trends(request: Request):
     """Return year-over-year financial data for the Trends page."""
     from collections import defaultdict
 
     preferences = _load_app_preferences()
     cycle_rule = preferences["cycle_rule"]
+    user_id = _read_session_user_id(request) or ""
 
     with _get_db() as db:
         rows = db._conn.execute(
-            "SELECT date, amount, category FROM app_tx_history ORDER BY date ASC"
+            "SELECT date, amount, category FROM app_tx_history WHERE user_id = ? ORDER BY date ASC",
+            (user_id,),
         ).fetchall()
 
     if not rows:
@@ -1717,7 +2249,7 @@ def api_trends():
 
 
 @app.get("/api/subscriptions")
-def api_subscriptions():
+def api_subscriptions(request: Request):
     """Return recurring subscriptions with monthly and annual projections."""
     from collections import defaultdict
     from datetime import date, timedelta
@@ -1725,14 +2257,17 @@ def api_subscriptions():
 
     preferences = _load_app_preferences()
     cycle_start, cycle_end = cycle_window_for(date.today(), preferences["cycle_rule"])
+    user_id = _read_session_user_id(request) or ""
 
     with _get_db() as db:
         rows = db._conn.execute(
             """
             SELECT date, clean_name, amount, category, COALESCE(original_description, '')
             FROM app_tx_history
+            WHERE user_id = ?
             ORDER BY date ASC
-            """
+            """,
+            (user_id,),
         ).fetchall()
 
     buckets: dict[str, dict[str, Any]] = defaultdict(

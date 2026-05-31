@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { getSummary } from '../api/services';
@@ -26,7 +26,7 @@ ChartJS.register(
 );
 
 export default function Dashboard() {
-  const { currency, effectiveTheme } = useApp();
+  const { currency, effectiveTheme, swrFetch } = useApp();
   const [scope, setScope] = useState(() => {
     try {
       const stored = localStorage.getItem('spectra-summary-scope');
@@ -39,21 +39,25 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
 
-  const fetchSummary = async (currentScope) => {
-    setLoading(true);
-    try {
-      const result = await getSummary(currentScope);
-      setData(result);
-    } catch (err) {
-      console.error('Failed to load summary:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const fetchSummary = useCallback((currentScope) => {
+    swrFetch(
+      `summary_${currentScope}`,
+      () => getSummary(currentScope),
+      (result) => {
+        setData(result);
+        setLoading(false);
+      },
+      (err) => {
+        console.error('Failed to load summary:', err);
+        setLoading(false);
+      }
+    );
+  }, [swrFetch]);
 
   useEffect(() => {
+    setLoading(true);
     fetchSummary(scope);
-  }, [scope]);
+  }, [scope, fetchSummary]);
 
   const handleScopeChange = (e) => {
     const newScope = e.target.value;

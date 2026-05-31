@@ -1,5 +1,17 @@
 import { api } from './client';
 
+export const getCurrentUser = () =>
+  api.get('/api/auth/me');
+
+export const getDemoUsers = () =>
+  api.get('/api/auth/demo-users');
+
+export const loginDemoUser = (userId) =>
+  api.post('/api/auth/login', { user_id: userId });
+
+export const logout = () =>
+  api.post('/api/auth/logout', {});
+
 export const getSummary = (scope = 'cycle') => 
   api.get(`/api/summary?scope=${encodeURIComponent(scope)}`);
 
@@ -81,3 +93,9 @@ export const uploadFileRaw = (file) => {
     body: formData,
   });
 };
+
+export const importBankRaw = () => (
+  fetch('/api/import-bank', {
+    method: 'POST',
+  })
+);

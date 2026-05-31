@@ -1,4 +1,3 @@
-import React from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { Layout } from './components/layout/Layout';
 import Dashboard from './pages/Dashboard';
@@ -8,8 +7,20 @@ import Trends from './pages/Trends';
 import Subscriptions from './pages/Subscriptions';
 import Upload from './pages/Upload';
 import Settings from './pages/Settings';
+import Login from './pages/Login';
+import { useApp } from './context/AppContext';
 
 function App() {
+  const { authLoading, currentUser } = useApp();
+
+  if (authLoading) {
+    return <div className="auth-loading">Loading...</div>;
+  }
+
+  if (!currentUser) {
+    return <Login />;
+  }
+
   return (
     <BrowserRouter>
       <Routes>

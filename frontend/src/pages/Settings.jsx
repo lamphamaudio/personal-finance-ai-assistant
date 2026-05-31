@@ -22,7 +22,9 @@ export default function Settings() {
     currency,
     setCurrency,
     showToast,
-    refreshPreferences: refreshGlobalPreferences
+    refreshPreferences: refreshGlobalPreferences,
+    currentUser,
+    logoutCurrentUser
   } = useApp();
 
   const navigate = useNavigate();
@@ -844,6 +846,35 @@ export default function Settings() {
             <button className="btn btn-danger" type="button" onClick={handleResetDatabase}>
               Xóa sạch DB
             </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-section" id="settings-account">
+        <div className="settings-section-head">
+          <div>
+            <div className="settings-section-eyebrow">Tai khoan</div>
+            <h2>Phien dang nhap</h2>
+            <p>Quan ly phien Spectra dang ket noi voi Bank Simulator.</p>
+          </div>
+        </div>
+
+        <div className="settings-group">
+          <div className="settings-row">
+            <div className="settings-label">
+              <span>Signed in</span><strong>{currentUser?.persona_type || 'Demo user'}</strong>
+              {currentUser?.bank_name && (
+                <small>{currentUser.bank_name} - {currentUser.account_number}</small>
+              )}
+            </div>
+            <div className="settings-control-group">
+              <a className="btn btn-secondary" href="/sso/bank">
+                Open Bank Simulator
+              </a>
+              <button className="btn btn-secondary" type="button" onClick={logoutCurrentUser}>
+                Logout
+              </button>
+            </div>
           </div>
         </div>
       </section>
