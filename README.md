@@ -3,48 +3,71 @@
 🏦 Hệ thống quản lý tài chính cá nhân với AI
 
 **2 Services:**
-- **Main Service (Spectra)** - Dashboard, AI categorization, Budget tracking → Port 8081
-- **Bank Simulator** - REST API với dữ liệu test → Port 8000
+- **Main Service (Spectra)** - Dashboard, AI categorization, Budget tracking → Port 8080 (hoặc 8081)
+- **Bank Simulator** - REST API với dữ liệu test & local UI → Port 8000
 
 Dùng chung **Supabase PostgreSQL Database**
 
 ---
 
-## 🚀 Khởi động
+## 🚀 Khởi động (Thủ công từng Terminal)
 
-### Lần đầu tiên (Setup):
+### 1. Cấu hình Environment (.env)
+Trước khi chạy, hãy chuẩn bị các tệp cấu hình môi trường để kết nối database và các API cần thiết:
+- Sao chép `.env.example` thành `.env` tại thư mục gốc của dự án.
+- Sao chép `bank_simulator/.env.example` thành `bank_simulator/.env`.
+- Cấu hình thông số trong hai tệp `.env` vừa tạo (đặc biệt là biến `DATABASE_URL` kết nối với Supabase PostgreSQL).
+
+### 2. Khởi động các Services
+
+Để chạy ứng dụng hoàn chỉnh, bạn mở 2 Terminal riêng biệt:
+
+#### Terminal 1: Chạy Main Service (Spectra)
+Bạn có thể chọn chạy trực tiếp bằng Python (sử dụng `uv` hoặc môi trường ảo `.venv`) hoặc chạy qua Docker.
+
+**Cách A: Chạy trực tiếp bằng Python (Khuyên dùng)**
+- Cài đặt dependencies (nếu chưa cài):
+  ```bash
+  # Nếu dùng uv:
+  uv sync
+  
+  # Hoặc dùng pip:
+  pip install -e .
+  ```
+- Khởi chạy Spectra:
+  ```bash
+  # Nếu dùng uv:
+  uv run spectra --serve --port 8080
+  
+  # Hoặc dùng python trực tiếp:
+  python -m spectra --serve --port 8080
+  ```
+
+**Cách B: Chạy qua Docker**
 ```bash
-py setup.py
+docker compose up --build
 ```
+*(Nếu muốn chạy ở port khác cổng 8080 mặc định, thiết lập biến môi trường `SPECTRA_PORT` trước khi chạy docker compose)*
 
-### Khởi động services:
+---
 
-**Cách 1: Tự mở 2 terminal (Đơn giản nhất)**
-
-Terminal 1:
+#### Terminal 2: Chạy Bank Simulator
+Chạy simulator bằng python ở môi trường local:
 ```bash
 cd bank_simulator
-py main.py
+python main.py
 ```
+*(Nếu sử dụng Windows launcher, có thể dùng lệnh `py main.py`)*
 
-Terminal 2:
-```bash
-py -m spectra --serve --port 8081
-```
-
-**Cách 2: Double-click file .cmd**
-- `start_bank_simulator.cmd`
-- `start_main_service.cmd`
-
-**Truy cập:**
-- Main Service: http://localhost:8081
-- Bank Simulator: http://localhost:8000/docs
+### 3. Truy cập các dịch vụ
+- **Main Service (Spectra Dashboard):** [http://localhost:8080](http://localhost:8080) (hoặc cổng bạn cấu hình)
+- **Bank Simulator (API Docs & UI):** [http://localhost:8000](http://localhost:8000) / [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ---
 
 ## 📊 Tính năng
 
-### Main Service (8081)
+### Main Service (Spectra)
 - Dashboard với charts
 - Upload CSV/PDF/OFX
 - AI categorization
@@ -95,14 +118,13 @@ Docs: http://localhost:8000/docs
 
 ```
 personal-finance-ai-assistant/
-├── run.py                    ← CHẠY FILE NÀY
-├── .env                      ← Config
-├── src/spectra/              ← Main service
-├── supabase/migrations/      ← Database schemas
-└── bank_simulator/           ← Bank simulator
-    ├── .env
-    ├── main.py               ← API server
-    └── data_seeder.py        ← Data generator
+├── .env                      ← Cấu hình môi trường cho Spectra
+├── src/spectra/              ← Mã nguồn Main service (Spectra)
+├── supabase/migrations/      ← Cấu hình và migration cho database Supabase
+└── bank_simulator/           ← Dịch vụ giả lập ngân hàng (Bank Simulator)
+    ├── .env                  ← Cấu hình môi trường cho Bank Simulator
+    ├── main.py               ← API server & Dashboard của Bank Simulator
+    └── data_seeder.py        ← Script tạo dữ liệu mẫu cho ngân hàng
 ```
 
 ---
