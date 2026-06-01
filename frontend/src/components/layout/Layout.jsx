@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Outlet } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { ToastContainer } from '../ui/Toast';
+import { FloatingAdvisorWidget } from '../ChatbotInterface';
 
 export const Layout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -52,6 +53,7 @@ export const Layout = () => {
       </main>
 
       <ToastContainer />
+      <FloatingAdvisorWidget />
     </div>
   );
 };

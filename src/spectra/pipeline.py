@@ -171,10 +171,7 @@ def run(settings: Settings, file: str, currency: str, dry_run: bool) -> None:
                 else:
                     categorised.extend(local_results)
             else:
-                if settings.ai_provider == "gemini":
-                    api_key, model = settings.gemini_api_key, settings.gemini_model
-                else:
-                    api_key, model = settings.openai_api_key, settings.openai_model
+                api_key, model = settings.openai_api_key, settings.openai_model
 
                 llm_results = categorise(
                     flat, existing_categories,

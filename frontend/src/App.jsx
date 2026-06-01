@@ -8,6 +8,7 @@ import Subscriptions from './pages/Subscriptions';
 import Upload from './pages/Upload';
 import Settings from './pages/Settings';
 import Login from './pages/Login';
+import Chat from './pages/Chat';
 import { useApp } from './context/AppContext';
 
 function App() {
@@ -30,6 +31,7 @@ function App() {
           <Route path="budget" element={<Budget />} />
           <Route path="trends" element={<Trends />} />
           <Route path="subscriptions" element={<Subscriptions />} />
+          <Route path="chat" element={<Chat />} />
           <Route path="upload" element={<Upload />} />
           <Route path="settings" element={<Settings />} />
         </Route>

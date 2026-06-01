@@ -248,6 +248,25 @@ def _fetch_demo_user(user_id: str) -> dict[str, Any] | None:
 # ── Global error handler ──────────────────────────────────────────────
 
 
+def _fallback_session_user(user_id: str) -> dict[str, Any]:
+    """Return non-sensitive session user data when Bank profile lookup is unavailable."""
+    return {
+        "user_id": str(user_id),
+        "persona_type": "Bank Simulator",
+        "account_number": "****",
+        "bank_name": "Demo Bank",
+        "current_balance": 0.0,
+    }
+
+
+def _fetch_demo_user_safe(user_id: str) -> dict[str, Any] | None:
+    try:
+        return _fetch_demo_user(user_id)
+    except Exception as exc:
+        logger.warning("Bank profile lookup failed for SSO user %s: %s", user_id, exc)
+        return _fallback_session_user(user_id)
+
+
 from fastapi.responses import JSONResponse as _JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -382,9 +401,12 @@ def _setup_redirect_if_needed(request: Request) -> RedirectResponse | None:
     if request.url.path == "/settings":
         return None
     settings = load_settings()
-    with BookmarkDB(settings.database_url) as db:
-        if _requires_base_currency_setup(db, settings):
-            return RedirectResponse(url="/settings?setup=currency", status_code=303)
+    try:
+        with BookmarkDB(settings.database_url) as db:
+            if _requires_base_currency_setup(db, settings):
+                return RedirectResponse(url="/settings?setup=currency", status_code=303)
+    except Exception as exc:
+        logger.warning("Skipping setup redirect because database is unavailable: %s", exc)
     return None
 
 
@@ -705,7 +727,7 @@ def api_auth_me(request: Request):
     user_id = _read_session_user_id(request)
     if not user_id:
         return JSONResponse({"error": "Not authenticated"}, status_code=401)
-    user = _fetch_demo_user(user_id)
+    user = _fetch_demo_user_safe(user_id)
     if not user:
         response = JSONResponse({"error": "Session user no longer exists"}, status_code=401)
         _clear_session_cookie(response, load_settings())
@@ -758,7 +780,7 @@ def sso_bank_callback(token: str = Query(...)):
     if not user_id:
         return JSONResponse({"error": "Invalid Bank Simulator SSO token"}, status_code=401)
 
-    user = _fetch_demo_user(user_id)
+    user = _fetch_demo_user_safe(user_id)
     if not user:
         return JSONResponse({"error": "Unknown SSO user"}, status_code=401)
 
@@ -821,6 +843,13 @@ def page_subscriptions(request: Request):
     if (redirect := _setup_redirect_if_needed(request)):
         return redirect
     return _serve_react_or_template(request, "subscriptions.html")
+
+
+@app.get("/chat", response_class=HTMLResponse)
+def page_chat(request: Request):
+    if (redirect := _setup_redirect_if_needed(request)):
+        return redirect
+    return _serve_react_or_template(request, "dashboard.html")
 
 
 # ————————————————— API: Dashboard Summary ——————————————————————————————————————
@@ -983,6 +1012,286 @@ def api_summary(request: Request, scope: str = Query("cycle")):
 
 
 # â”€â”€ API: Transactions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def _advisor_health_context(
+    *,
+    budget: float,
+    spent: float,
+    prediction: float,
+    remaining_budget: float,
+    top_categories: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if budget <= 0:
+        return {
+            "financial_health": "Unknown",
+            "budget_utilization": None,
+            "user_mood_context": "Tớ chưa thấy ngân sách tháng được đặt rõ, nên hãy nói mềm và tránh kết luận quá chắc.",
+        }
+
+    utilization = spent / budget
+    projected_ratio = prediction / budget if budget else 0
+    top = top_categories[0] if top_categories else None
+    top_hint = (
+        f" Nhóm chi nổi bật nhất là {top.get('category')} với khoảng {top.get('amount')} VND."
+        if top
+        else ""
+    )
+
+    if remaining_budget < 0 or projected_ratio >= 1.1 or utilization >= 0.95:
+        return {
+            "financial_health": "Critical",
+            "budget_utilization": round(utilization, 4),
+            "user_mood_context": (
+                "User đang có dấu hiệu bị ép ngân sách. Hãy phản hồi chân thành, quan tâm, "
+                "không trách móc, ưu tiên giảm áp lực và đề xuất một bước nhỏ ngay lúc này."
+                + top_hint
+            ),
+        }
+
+    if projected_ratio > 1 or utilization >= 0.8:
+        return {
+            "financial_health": "Watch",
+            "budget_utilization": round(utilization, 4),
+            "user_mood_context": (
+                "User chưa nguy hiểm nhưng đang tiến gần vùng cần để ý. Hãy nhắc nhẹ, tự nhiên, "
+                "không làm quá vấn đề."
+                + top_hint
+            ),
+        }
+
+    return {
+        "financial_health": "Safe",
+        "budget_utilization": round(utilization, 4),
+        "user_mood_context": (
+            "User vẫn ở vùng an toàn. Hãy trả lời thoải mái, khích lệ, nhưng vẫn giúp họ nhìn rõ "
+            "một thói quen chi tiêu đáng chú ý."
+            + top_hint
+        ),
+    }
+
+
+def _build_advisor_snapshot(request: Request) -> dict[str, Any]:
+    """Build the Data Snapshot that is attached to every advisor request."""
+    from collections import defaultdict
+    from datetime import date
+    from statistics import median
+
+    preferences = _load_app_preferences()
+    cycle_rule = preferences["cycle_rule"]
+    period_start, period_end = cycle_window_for(date.today(), cycle_rule)
+    current_cycle = _build_cycle_payload(cycle_rule)
+    user_id = _read_session_user_id(request) or ""
+
+    with _get_db() as db:
+        rows = db._conn.execute(
+            """
+            SELECT date, clean_name, amount, category
+            FROM app_tx_history
+            WHERE user_id = ? AND date >= ? AND date < ?
+            ORDER BY date DESC
+            """,
+            (user_id, period_start, period_end),
+        ).fetchall()
+        history_rows = db._conn.execute(
+            """
+            SELECT date, clean_name, amount, category
+            FROM app_tx_history
+            WHERE user_id = ? AND amount < 0
+            ORDER BY date DESC
+            LIMIT 180
+            """,
+            (user_id,),
+        ).fetchall()
+        budget_limits = db.get_budget_limits()
+
+    spent = 0.0
+    by_category: dict[str, float] = defaultdict(float)
+    for _date_str, _merchant, amount, category in rows:
+        if amount < 0:
+            value = abs(float(amount))
+            spent += value
+            by_category[str(category)] += value
+
+    burn_rate = _build_cycle_burn_rate(
+        today=date.today(),
+        period_start=period_start,
+        period_end=period_end,
+        total_spent=spent,
+    )
+
+    historical_amounts = [abs(float(amount)) for _d, _m, amount, _c in history_rows if amount < 0]
+    baseline = median(historical_amounts) if historical_amounts else 0
+    anomaly_threshold = max(baseline * 3, 1_000_000)
+    alerts = []
+    for date_str, clean_name, amount, category in rows:
+        if amount >= 0:
+            continue
+        value = abs(float(amount))
+        if value >= anomaly_threshold and len(alerts) < 3:
+            alerts.append(
+                {
+                    "date": str(date_str),
+                    "merchant": str(clean_name),
+                    "category": str(category),
+                    "amount": round(value, 2),
+                    "reason": "above historical median threshold",
+                }
+            )
+
+    top_categories = [
+        {"category": category, "amount": round(amount, 2)}
+        for category, amount in sorted(by_category.items(), key=lambda item: -item[1])[:5]
+    ]
+    monthly_budget = round(sum(limit for limit in budget_limits.values() if limit and limit > 0), 2)
+    remaining_budget = round(monthly_budget - spent, 2)
+    prediction = round(float(burn_rate["projected_total"]), 2)
+    health_context = _advisor_health_context(
+        budget=monthly_budget,
+        spent=spent,
+        prediction=prediction,
+        remaining_budget=remaining_budget,
+        top_categories=top_categories,
+    )
+
+    return {
+        "budget": monthly_budget,
+        "spent": round(spent, 2),
+        "days_remaining": int(burn_rate["remaining_days"]),
+        "prediction": prediction,
+        "remaining_budget": remaining_budget,
+        "alerts": alerts,
+        "top_categories": top_categories,
+        "current_cycle": current_cycle,
+        **health_context,
+    }
+
+
+@app.post("/api/advisor/chat")
+async def api_advisor_chat(request: Request):
+    """Ask the AI financial advisor with the user's current Data Snapshot."""
+    body = await request.json()
+    question = str(body.get("question") or "").strip()
+    if not question:
+        return JSONResponse({"error": "question is required"}, status_code=400)
+    history = body.get("history")
+    if not isinstance(history, list):
+        history = []
+
+    from spectra.ai import advisor_chat, advisor_should_bypass_model, advisor_should_include_chart
+
+    if advisor_should_bypass_model(question):
+        answer = advisor_chat(
+            question,
+            {},
+            provider="local",
+            api_key="",
+            model="local",
+            conversation_history=history[-6:],
+        )
+        return {
+            "answer": answer,
+            "chart": [],
+            "snapshot": {
+                "budget": None,
+                "spent": None,
+                "days_remaining": None,
+                "prediction": None,
+                "has_alerts": False,
+                "financial_health": None,
+            },
+        }
+
+    settings = load_settings()
+    snapshot = _build_advisor_snapshot(request)
+    provider = settings.ai_provider
+    if provider == "openai":
+        api_key = settings.openai_api_key
+        model = settings.openai_model
+    else:
+        api_key = ""
+        model = "local"
+
+    answer = advisor_chat(
+        question,
+        snapshot,
+        provider=provider,
+        api_key=api_key,
+        model=model,
+        conversation_history=history[-6:],
+    )
+    chart = snapshot.get("top_categories", []) if advisor_should_include_chart(question) else []
+
+    return {
+        "answer": answer,
+        "chart": chart,
+        "snapshot": {
+            "budget": snapshot["budget"],
+            "spent": snapshot["spent"],
+            "days_remaining": snapshot["days_remaining"],
+            "prediction": snapshot["prediction"],
+            "has_alerts": bool(snapshot["alerts"]),
+            "financial_health": snapshot.get("financial_health"),
+        },
+    }
+
+
+def _advisor_response_should_include_chart(question: str) -> bool:
+    text = str(question or "").strip().lower()
+    normalized = (
+        text.replace("à", "a")
+        .replace("á", "a")
+        .replace("ạ", "a")
+        .replace("ả", "a")
+        .replace("ã", "a")
+        .replace("ă", "a")
+        .replace("â", "a")
+        .replace("đ", "d")
+        .replace("è", "e")
+        .replace("é", "e")
+        .replace("ẹ", "e")
+        .replace("ẻ", "e")
+        .replace("ẽ", "e")
+        .replace("ê", "e")
+        .replace("ì", "i")
+        .replace("í", "i")
+        .replace("ị", "i")
+        .replace("ò", "o")
+        .replace("ó", "o")
+        .replace("ọ", "o")
+        .replace("ô", "o")
+        .replace("ơ", "o")
+        .replace("ù", "u")
+        .replace("ú", "u")
+        .replace("ụ", "u")
+        .replace("ư", "u")
+        .replace("ỳ", "y")
+        .replace("ý", "y")
+    )
+    compact = re.sub(r"[^\w\s]", "", normalized).strip()
+    if compact in {"hi", "hello", "hey", "alo", "chao", "xin chao", "chao ban", "fin oi"}:
+        return False
+    finance_terms = (
+        "ngheo",
+        "het tien",
+        "tien",
+        "chi tieu",
+        "tieu",
+        "ngan sach",
+        "budget",
+        "mua",
+        "trieu",
+        "khoan",
+        "hao",
+        "vi",
+    )
+    return any(term in normalized for term in finance_terms)
+
+
+def _advisor_response_should_include_chart(question: str) -> bool:
+    from spectra.ai import advisor_should_include_chart
+
+    return advisor_should_include_chart(question)
+
 
 @app.get("/api/transactions")
 def api_transactions(
@@ -1638,10 +1947,7 @@ async def _stream_processed_transactions(
         else:
             from spectra.ai import categorise
             provider = settings.ai_provider
-            if provider == "gemini":
-                api_key, model = settings.gemini_api_key, settings.gemini_model
-            else:
-                api_key, model = settings.openai_api_key, settings.openai_model
+            api_key, model = settings.openai_api_key, settings.openai_model
 
             for pct in range(30, 88, 5):
                 yield evt(pct, f"Waiting for {provider.title()} AI...")
@@ -1894,10 +2200,7 @@ async def api_upload(file: UploadFile = File(...)):
                     # Cloud: categorise in one batch (can't stream per-row)
                     from spectra.ai import categorise
                     provider = settings.ai_provider
-                    if provider == "gemini":
-                        api_key, model = settings.gemini_api_key, settings.gemini_model
-                    else:
-                        api_key, model = settings.openai_api_key, settings.openai_model
+                    api_key, model = settings.openai_api_key, settings.openai_model
 
                     # Fake granular progress while waiting for API
                     for pct in range(30, 88, 5):

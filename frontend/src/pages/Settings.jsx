@@ -758,14 +758,12 @@ export default function Settings() {
           <div className="settings-row">
             <div className="settings-label">
               AI Categorization Engine
-              <small>Được thiết lập thông qua biến môi trường <code>AI_PROVIDER</code> trong file .env (local, openai, gemini).</small>
+              <small>Được thiết lập thông qua biến môi trường <code>AI_PROVIDER</code> trong file .env (openai hoặc local).</small>
             </div>
             <span className={`settings-badge ${settings?.provider === 'local' ? 'local' : 'cloud'}`}>
               {settings?.provider === 'local' 
                 ? 'Học máy Offline (Cục bộ)' 
-                : settings?.provider === 'gemini' 
-                  ? 'Gemini Cloud AI' 
-                  : 'OpenAI Cloud AI'}
+                : 'OpenAI Cloud AI'}
             </span>
           </div>
 

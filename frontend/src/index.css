@@ -117,3 +117,1212 @@
     flex: 1;
   }
 }
+
+.advisor-shell {
+  min-height: calc(100vh - 48px);
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 16px;
+  font-family: Inter, var(--font, system-ui, sans-serif);
+  color: #0f172a;
+}
+
+.advisor-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.advisor-header h1 {
+  margin: 6px 0 6px;
+  font-size: clamp(1.6rem, 3vw, 2.35rem);
+  letter-spacing: 0;
+  color: #071a3a;
+}
+
+.advisor-header p,
+.advisor-policy {
+  color: #64748b;
+}
+
+.advisor-eyebrow,
+.advisor-header-actions,
+.advisor-mini-chart-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.advisor-eyebrow {
+  color: #0f766e;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.advisor-header-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.advisor-card {
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+}
+
+.advisor-policy {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: #f8fafc;
+  font-size: 0.9rem;
+}
+
+.advisor-chat-card {
+  min-height: 560px;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  overflow: hidden;
+}
+
+.advisor-chat-scroll {
+  min-height: 0;
+  max-height: calc(100vh - 300px);
+  overflow-y: auto;
+  padding: 18px;
+  background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+}
+
+.advisor-message {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.advisor-message-user {
+  flex-direction: row-reverse;
+}
+
+.advisor-avatar {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+}
+
+.advisor-avatar-ai {
+  background: #071a3a;
+  color: #ffffff;
+}
+
+.advisor-avatar-user {
+  background: #e0f2fe;
+  color: #075985;
+}
+
+.advisor-bubble {
+  width: min(760px, calc(100% - 44px));
+  padding: 14px 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.advisor-message-user .advisor-bubble {
+  background: #071a3a;
+  border-color: #071a3a;
+  color: #ffffff;
+}
+
+.advisor-markdown {
+  display: grid;
+  gap: 10px;
+}
+
+.advisor-markdown h3,
+.advisor-markdown p {
+  margin: 0;
+}
+
+.advisor-markdown h3 {
+  font-size: 0.9rem;
+  color: #0f766e;
+}
+
+.advisor-message-user .advisor-markdown h3 {
+  color: #bae6fd;
+}
+
+.advisor-markdown ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.advisor-mini-chart {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.advisor-mini-chart-title {
+  margin-bottom: 10px;
+  color: #071a3a;
+  font-weight: 700;
+  font-size: 0.88rem;
+}
+
+.advisor-bars {
+  display: grid;
+  gap: 8px;
+}
+
+.advisor-bar-row {
+  display: grid;
+  grid-template-columns: minmax(84px, 0.9fr) minmax(110px, 2fr) minmax(54px, auto);
+  align-items: center;
+  gap: 10px;
+  font-size: 0.82rem;
+}
+
+.advisor-bar-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.advisor-bar-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+
+.advisor-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0f766e, #0284c7);
+}
+
+.advisor-bar-value {
+  color: #64748b;
+  text-align: right;
+}
+
+.advisor-composer {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  padding: 14px;
+  border-top: 1px solid #e2e8f0;
+  background: #ffffff;
+}
+
+.advisor-composer textarea {
+  width: 100%;
+  min-height: 46px;
+  max-height: 130px;
+  resize: vertical;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 11px 12px;
+  color: #0f172a;
+  font: inherit;
+  line-height: 1.45;
+}
+
+.advisor-btn {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #071a3a;
+  border-radius: 8px;
+  padding: 9px 13px;
+  background: #071a3a;
+  color: #ffffff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.advisor-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.advisor-btn-secondary {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #071a3a;
+}
+
+.advisor-btn-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: #071a3a;
+}
+
+.advisor-skeleton-wrap {
+  display: grid;
+  gap: 10px;
+}
+
+.advisor-skeleton {
+  height: 12px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #e2e8f0, #f8fafc, #e2e8f0);
+  background-size: 200% 100%;
+  animation: advisor-shimmer 1.1s ease-in-out infinite;
+}
+
+.advisor-skeleton-wide {
+  width: min(520px, 90%);
+}
+
+.advisor-skeleton-mid {
+  width: min(420px, 76%);
+}
+
+.advisor-skeleton-short {
+  width: min(260px, 52%);
+}
+
+.advisor-floating-root {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 10000;
+  display: grid;
+  justify-items: end;
+  gap: 12px;
+  font-family: Inter, var(--font, system-ui, sans-serif);
+}
+
+.advisor-floating-root-expanded {
+  top: 16px;
+  right: 16px;
+  bottom: 16px;
+  left: max(320px, 18vw);
+  align-items: stretch;
+  pointer-events: none;
+}
+
+.advisor-floating-root-expanded > * {
+  pointer-events: auto;
+}
+
+.advisor-floating-button {
+  width: 64px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: #071a3a;
+  color: #ffffff;
+  box-shadow: 0 18px 42px rgba(7, 26, 58, 0.32);
+  cursor: pointer;
+}
+
+.advisor-floating-button span {
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.advisor-floating-panel {
+  width: min(640px, calc(100vw - 32px));
+  height: min(760px, calc(100vh - 112px));
+  max-height: calc(100vh - 112px);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.25);
+}
+
+.advisor-floating-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.advisor-floating-header strong {
+  display: block;
+  margin-top: 3px;
+  color: #071a3a;
+  line-height: 1.22;
+  white-space: normal;
+}
+
+.advisor-floating-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+  min-width: 0;
+  width: 100%;
+}
+
+.advisor-icon-btn {
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border-radius: 999px;
+}
+
+.advisor-resize-btn {
+  width: auto;
+  min-width: 92px;
+  padding: 0 10px;
+}
+
+.advisor-resize-btn span {
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.advisor-floating-policy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 0.78rem;
+}
+
+.advisor-floating-panel .advisor-chat-card {
+  min-height: 0;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.advisor-chat-workspace {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.advisor-chat-workspace-with-history {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.advisor-chat-main {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+}
+
+.advisor-session-panel {
+  min-width: 0;
+  min-height: 0;
+  max-height: 190px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border-right: 0;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.advisor-session-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.advisor-session-panel-head strong {
+  color: #071a3a;
+  font-size: 0.88rem;
+}
+
+.advisor-session-panel-head button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  padding: 5px 8px;
+  background: #ffffff;
+  color: #075985;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.advisor-session-empty {
+  margin: 0;
+  padding: 12px;
+  color: #64748b;
+  font-size: 0.82rem;
+}
+
+.advisor-session-list {
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 10px;
+}
+
+.advisor-session-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  align-items: center;
+  width: 100%;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 9px;
+  background: #ffffff;
+  color: #0f172a;
+  text-align: left;
+  cursor: pointer;
+}
+
+.advisor-session-item.active {
+  border-color: #0ea5e9;
+  background: #eff6ff;
+}
+
+.advisor-session-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+  font-size: 0.82rem;
+}
+
+.advisor-session-item small {
+  color: #64748b;
+  font-size: 0.72rem;
+}
+
+.advisor-session-item svg {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  color: #94a3b8;
+}
+
+.advisor-session-item svg:hover {
+  color: #dc2626;
+}
+
+.advisor-floating-panel .advisor-chat-scroll {
+  max-height: none;
+  padding: 14px;
+}
+
+.advisor-floating-panel .advisor-bubble {
+  width: calc(100% - 44px);
+  padding: 12px;
+}
+
+.advisor-floating-panel .advisor-composer {
+  grid-template-columns: 1fr auto;
+  padding: 12px;
+}
+
+.advisor-floating-panel .advisor-composer textarea {
+  min-height: 42px;
+  max-height: 96px;
+}
+
+@keyframes advisor-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@media (max-width: 760px) {
+  .advisor-floating-root {
+    right: 14px;
+    bottom: 14px;
+  }
+
+  .advisor-floating-panel {
+    width: calc(100vw - 28px);
+    height: calc(100vh - 92px);
+    max-height: calc(100vh - 92px);
+  }
+
+  .advisor-floating-button {
+    width: 58px;
+    height: 58px;
+  }
+
+  .advisor-shell {
+    min-height: calc(100vh - 24px);
+  }
+
+  .advisor-header {
+    display: grid;
+  }
+
+  .advisor-header-actions,
+  .advisor-header-actions .advisor-btn {
+    width: 100%;
+  }
+
+  .advisor-chat-scroll {
+    max-height: calc(100vh - 360px);
+    padding: 12px;
+  }
+
+  .advisor-bubble {
+    width: calc(100% - 42px);
+    padding: 12px;
+  }
+
+  .advisor-composer {
+    grid-template-columns: 1fr;
+  }
+
+  .advisor-floating-panel .advisor-composer {
+    grid-template-columns: 1fr auto;
+  }
+
+  .advisor-bar-row {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .advisor-bar-value {
+    text-align: left;
+  }
+}
+
+.advisor-floating-panel {
+  position: relative;
+  border-color: rgba(14, 116, 144, 0.2);
+  background:
+    linear-gradient(#ffffff, #ffffff) padding-box,
+    linear-gradient(135deg, rgba(7, 26, 58, 0.95), rgba(15, 118, 110, 0.55), rgba(2, 132, 199, 0.72)) border-box;
+  border: 1px solid transparent;
+  isolation: isolate;
+}
+
+.advisor-floating-glow {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 4px;
+  background: linear-gradient(90deg, #071a3a, #0f766e, #0284c7, #071a3a);
+  background-size: 220% 100%;
+  animation: advisor-header-flow 5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.advisor-floating-panel-expanded {
+  width: min(880px, 100%);
+  height: 100%;
+  max-height: 100%;
+}
+
+.advisor-floating-root-expanded .advisor-floating-button {
+  display: none;
+}
+
+.advisor-floating-panel-expanded .advisor-floating-header {
+  position: relative;
+  z-index: 3;
+  background: rgba(255, 255, 255, 0.97);
+}
+
+.advisor-floating-panel-expanded .advisor-floating-title {
+  min-width: 0;
+}
+
+.advisor-floating-panel-expanded .advisor-chat-workspace-with-history {
+  grid-template-columns: minmax(240px, 0.28fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.advisor-floating-panel-expanded .advisor-session-panel {
+  max-height: none;
+  border-right: 1px solid #e2e8f0;
+  border-bottom: 0;
+}
+
+.advisor-floating-title {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.advisor-floating-title > div:last-child {
+  min-width: 0;
+  overflow: visible;
+}
+
+.advisor-fin-mark {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #071a3a, #0f766e);
+  color: #ffffff;
+  box-shadow: 0 10px 22px rgba(15, 118, 110, 0.26);
+}
+
+.advisor-floating-panel .advisor-eyebrow {
+  color: #0f766e;
+  letter-spacing: 0;
+}
+
+.advisor-floating-actions .advisor-icon-btn {
+  color: #071a3a;
+  transition: transform 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.advisor-floating-actions .advisor-icon-btn:hover {
+  transform: translateY(-1px);
+  background: #e0f2fe;
+  color: #075985;
+}
+
+.advisor-floating-policy {
+  border-bottom: 1px solid #e2e8f0;
+  line-height: 1.35;
+}
+
+.advisor-floating-button {
+  position: relative;
+  overflow: hidden;
+  grid-template-rows: 1fr auto;
+  gap: 2px;
+  background: linear-gradient(135deg, #071a3a 0%, #0f766e 55%, #0284c7 100%);
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.advisor-floating-button:hover {
+  transform: translateY(-2px) scale(1.03);
+  box-shadow: 0 22px 52px rgba(7, 26, 58, 0.38);
+}
+
+.advisor-floating-button-open {
+  background: linear-gradient(135deg, #071a3a 0%, #334155 100%);
+}
+
+.advisor-floating-button strong {
+  position: relative;
+  z-index: 1;
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
+.advisor-floating-button-shine {
+  position: absolute;
+  inset: -40% auto -40% -80%;
+  width: 55%;
+  transform: rotate(18deg);
+  background: rgba(255, 255, 255, 0.28);
+  animation: advisor-shine 3.2s ease-in-out infinite;
+}
+
+.advisor-floating-button > svg {
+  position: relative;
+  z-index: 1;
+}
+
+.advisor-chat-scroll {
+  scroll-behavior: smooth;
+}
+
+.advisor-floating-panel .advisor-chat-scroll {
+  background:
+    linear-gradient(180deg, rgba(248, 250, 252, 0.98) 0%, rgba(255, 255, 255, 0.98) 100%),
+    repeating-linear-gradient(135deg, rgba(2, 132, 199, 0.04), rgba(2, 132, 199, 0.04) 1px, transparent 1px, transparent 16px);
+}
+
+.advisor-bubble {
+  line-height: 1.55;
+}
+
+.advisor-message-assistant .advisor-bubble {
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+
+.advisor-message-user .advisor-bubble {
+  box-shadow: 0 10px 24px rgba(7, 26, 58, 0.16);
+}
+
+.advisor-quick-prompts {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 10px 12px 0;
+  background: #ffffff;
+  border-top: 1px solid #e2e8f0;
+}
+
+.advisor-quick-prompts button {
+  flex: 0 0 auto;
+  max-width: min(290px, 72vw);
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  padding: 8px 11px;
+  background: #eff6ff;
+  color: #075985;
+  font: inherit;
+  font-size: 0.82rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: transform 160ms ease, background 160ms ease, border-color 160ms ease;
+}
+
+.advisor-quick-prompts button:hover {
+  transform: translateY(-1px);
+  border-color: #0ea5e9;
+  background: #e0f2fe;
+}
+
+.advisor-quick-prompts button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.advisor-typing {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  margin-bottom: 2px;
+}
+
+.advisor-typing span {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #0f766e;
+  animation: advisor-typing 1s ease-in-out infinite;
+}
+
+.advisor-typing span:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.advisor-typing span:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+.advisor-composer textarea:focus {
+  outline: 2px solid rgba(14, 165, 233, 0.24);
+  border-color: #0284c7;
+}
+
+.advisor-composer .advisor-btn {
+  align-self: stretch;
+  background: linear-gradient(135deg, #071a3a, #0f766e);
+  border-color: transparent;
+  box-shadow: 0 10px 22px rgba(7, 26, 58, 0.18);
+}
+
+.advisor-composer .advisor-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+@keyframes advisor-header-flow {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+@keyframes advisor-shine {
+  0%, 52% { left: -80%; }
+  100% { left: 130%; }
+}
+
+@keyframes advisor-typing {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.45; }
+  40% { transform: translateY(-4px); opacity: 1; }
+}
+
+@media (max-width: 760px) {
+  .advisor-floating-root-expanded {
+    inset: 10px;
+    left: 10px;
+  }
+
+  .advisor-floating-panel-expanded {
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+  }
+
+  .advisor-floating-header {
+    padding: 12px 12px 9px;
+  }
+
+  .advisor-floating-actions {
+    gap: 2px;
+  }
+
+  .advisor-floating-panel-expanded .advisor-floating-header {
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .advisor-floating-panel-expanded .advisor-floating-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    max-width: 174px;
+  }
+
+  .advisor-floating-panel:not(.advisor-floating-panel-expanded) .advisor-floating-header {
+    grid-template-columns: 1fr;
+  }
+
+  .advisor-floating-panel:not(.advisor-floating-panel-expanded) .advisor-floating-actions {
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-end;
+  }
+
+  .advisor-floating-panel:not(.advisor-floating-panel-expanded) .advisor-resize-btn {
+    min-width: 92px;
+  }
+
+  .advisor-chat-workspace-with-history,
+  .advisor-floating-panel-expanded .advisor-chat-workspace-with-history {
+    grid-template-columns: 1fr;
+  }
+
+  .advisor-session-panel {
+    max-height: 190px;
+    border-right: 0;
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  .advisor-fin-mark {
+    width: 34px;
+    height: 34px;
+  }
+}
+
+/* Dense chat tuning: keeps the floating advisor readable while fitting more text. */
+.advisor-floating-panel {
+  font-size: 13px;
+}
+
+.advisor-floating-header {
+  gap: 8px;
+  padding: 12px 14px 10px;
+}
+
+.advisor-floating-title {
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 9px;
+}
+
+.advisor-fin-mark {
+  width: 34px;
+  height: 34px;
+}
+
+.advisor-floating-panel .advisor-eyebrow {
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.advisor-floating-header strong {
+  margin-top: 2px;
+  font-size: 16px;
+  line-height: 1.18;
+}
+
+.advisor-floating-actions {
+  gap: 4px;
+}
+
+.advisor-icon-btn {
+  width: 30px;
+  min-height: 30px;
+}
+
+.advisor-resize-btn {
+  min-width: 104px;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+.advisor-resize-btn span {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.advisor-floating-policy {
+  gap: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.advisor-floating-panel .advisor-chat-scroll {
+  padding: 10px 12px;
+}
+
+.advisor-message {
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.advisor-avatar {
+  width: 30px;
+  height: 30px;
+  flex-basis: 30px;
+}
+
+.advisor-avatar svg {
+  width: 15px;
+  height: 15px;
+}
+
+.advisor-floating-panel .advisor-bubble {
+  width: calc(100% - 38px);
+  padding: 9px 11px;
+  font-size: 13px;
+  line-height: 1.42;
+}
+
+.advisor-markdown {
+  gap: 7px;
+}
+
+.advisor-markdown h3 {
+  font-size: 12px;
+}
+
+.advisor-mini-chart {
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.advisor-mini-chart-title {
+  margin-bottom: 7px;
+  font-size: 12px;
+}
+
+.advisor-bars {
+  gap: 6px;
+}
+
+.advisor-bar-row {
+  grid-template-columns: minmax(72px, 0.9fr) minmax(96px, 2fr) minmax(48px, auto);
+  gap: 8px;
+  font-size: 12px;
+}
+
+.advisor-bar-track {
+  height: 6px;
+}
+
+.advisor-quick-prompts {
+  gap: 6px;
+  padding: 7px 10px 0;
+}
+
+.advisor-quick-prompts button {
+  max-width: min(250px, 70vw);
+  padding: 6px 9px;
+  font-size: 12px;
+}
+
+.advisor-floating-panel .advisor-composer {
+  gap: 8px;
+  padding: 9px 10px;
+}
+
+.advisor-floating-panel .advisor-composer textarea {
+  min-height: 54px;
+  max-height: 92px;
+  padding: 9px 10px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.advisor-composer .advisor-btn {
+  min-height: 54px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.advisor-session-panel {
+  max-height: 170px;
+}
+
+.advisor-session-panel-head {
+  padding: 9px 10px;
+}
+
+.advisor-session-panel-head strong {
+  font-size: 13px;
+}
+
+.advisor-session-panel-head button {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.advisor-session-list {
+  gap: 6px;
+  padding: 8px;
+}
+
+.advisor-session-item {
+  padding: 8px;
+}
+
+.advisor-session-item span {
+  font-size: 12px;
+}
+
+.advisor-session-item small,
+.advisor-session-empty {
+  font-size: 11px;
+}
+
+@media (max-width: 760px) {
+  .advisor-floating-header {
+    padding: 11px 12px 9px;
+  }
+
+  .advisor-floating-header strong {
+    font-size: 15px;
+  }
+
+  .advisor-floating-panel:not(.advisor-floating-panel-expanded) .advisor-resize-btn {
+    min-width: 96px;
+  }
+
+  .advisor-floating-panel .advisor-bubble,
+  .advisor-floating-panel .advisor-composer textarea,
+  .advisor-composer .advisor-btn {
+    font-size: 12.5px;
+  }
+}
+
+/* Message authorship: make user and Fin replies visually obvious and compact. */
+.advisor-message {
+  width: 100%;
+  align-items: flex-start;
+}
+
+.advisor-message-body {
+  min-width: 0;
+  max-width: min(78%, 720px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.advisor-message-assistant .advisor-message-body {
+  align-items: flex-start;
+  margin-right: auto;
+}
+
+.advisor-message-user .advisor-message-body {
+  align-items: flex-end;
+  max-width: min(72%, 640px);
+  margin-left: auto;
+}
+
+.advisor-message-label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0 2px;
+  color: #64748b;
+  font-size: 10.5px;
+  font-weight: 800;
+  line-height: 1.15;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.advisor-message-label small {
+  color: #94a3b8;
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: none;
+}
+
+.advisor-message-user .advisor-message-label {
+  color: #075985;
+}
+
+.advisor-message-user .advisor-message-label small {
+  color: #7dd3fc;
+}
+
+.advisor-floating-panel .advisor-bubble {
+  width: fit-content;
+  max-width: 100%;
+}
+
+.advisor-message-assistant .advisor-bubble {
+  border-left: 3px solid #0f766e;
+  border-radius: 8px 8px 8px 3px;
+}
+
+.advisor-message-user .advisor-bubble {
+  border-radius: 8px 8px 3px 8px;
+}
+
+.advisor-message .advisor-avatar {
+  margin-top: 16px;
+}
+
+.advisor-message-user .advisor-markdown {
+  justify-items: end;
+  text-align: left;
+}
+
+.advisor-message-user .advisor-markdown p,
+.advisor-message-assistant .advisor-markdown p {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .advisor-message-body,
+  .advisor-floating-panel .advisor-message-body {
+    max-width: min(84%, 620px);
+  }
+
+  .advisor-message-user .advisor-message-body,
+  .advisor-floating-panel .advisor-message-user .advisor-message-body {
+    max-width: min(80%, 560px);
+  }
+
+  .advisor-message-label small {
+    display: none;
+  }
+}

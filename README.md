@@ -1,150 +1,333 @@
 # Personal Finance AI Assistant
 
-🏦 Hệ thống quản lý tài chính cá nhân với AI
+Ứng dụng quản lý tài chính cá nhân có dashboard, nhập sao kê ngân hàng, phân loại giao dịch, ngân sách, phát hiện bất thường và chatbot tài chính cá nhân "Fin".
 
-**2 Services:**
-- **Main Service (Spectra)** - Dashboard, AI categorization, Budget tracking → Port 8080 (hoặc 8081)
-- **Bank Simulator** - REST API với dữ liệu test & local UI → Port 8000
+Fin hiện chạy theo kiến trúc **OpenAI-first fintech advisor**: backend tự dựng bối cảnh tài chính từ database, sau đó gửi prompt có kiểm soát sang OpenAI. Chế độ `local` vẫn tồn tại như fallback offline cho phân loại giao dịch, nhưng trải nghiệm chatbot thông minh cần `AI_PROVIDER=openai`.
 
-Dùng chung **Supabase PostgreSQL Database**
+## Mục Tiêu Nghiệp Vụ
 
----
+- Giúp user hiểu dòng tiền cá nhân theo chu kỳ hiện tại.
+- Trả lời câu hỏi tài chính bằng dữ liệu thật của phiên đăng nhập, không dựa vào dữ liệu người dùng nhập tay từ frontend.
+- Cảnh báo sớm khi dự báo chi tiêu vượt ngân sách.
+- Hỏi xác nhận giao dịch bất thường trước khi đưa lời khuyên chắc chắn.
+- Không tư vấn đầu tư rủi ro cao như crypto, margin, forex hoặc chứng khoán lướt sóng.
+- Không hiển thị tên thật, số tài khoản đầy đủ, địa chỉ hoặc định danh nhạy cảm trong câu trả lời.
 
-## 🚀 Khởi động (Thủ công từng Terminal)
+## Kiến Trúc Tổng Quan
 
-### 1. Cấu hình Environment (.env)
-Trước khi chạy, hãy chuẩn bị các tệp cấu hình môi trường để kết nối database và các API cần thiết:
-- Sao chép `.env.example` thành `.env` tại thư mục gốc của dự án.
-- Sao chép `bank_simulator/.env.example` thành `bank_simulator/.env`.
-- Cấu hình thông số trong hai tệp `.env` vừa tạo (đặc biệt là biến `DATABASE_URL` kết nối với Supabase PostgreSQL).
+```mermaid
+flowchart LR
+  User["User"]
+  UI["React Dashboard + Floating Fin Chat"]
+  Storage["localStorage: chat sessions"]
+  API["FastAPI /api/advisor/chat"]
+  DB["Supabase/Postgres"]
+  Snapshot["Advisor Data Snapshot"]
+  Prompt["Prompt Orchestrator"]
+  OpenAI["OpenAI model"]
+  Response["Answer + mini chart"]
 
-### 2. Khởi động các Services
-
-Để chạy ứng dụng hoàn chỉnh, bạn mở 2 Terminal riêng biệt:
-
-#### Terminal 1: Chạy Main Service (Spectra)
-Bạn có thể chọn chạy trực tiếp bằng Python (sử dụng `uv` hoặc môi trường ảo `.venv`) hoặc chạy qua Docker.
-
-**Cách A: Chạy trực tiếp bằng Python (Khuyên dùng)**
-- Cài đặt dependencies (nếu chưa cài):
-  ```bash
-  # Nếu dùng uv:
-  uv sync
-  
-  # Hoặc dùng pip:
-  pip install -e .
-  ```
-- Khởi chạy Spectra:
-  ```bash
-  # Nếu dùng uv:
-  uv run spectra --serve --port 8080
-  
-  # Hoặc dùng python trực tiếp:
-  python -m spectra --serve --port 8080
-  ```
-
-**Cách B: Chạy qua Docker**
-```bash
-docker compose up --build
+  User --> UI
+  UI --> Storage
+  UI -->|question + last messages| API
+  API --> DB
+  DB --> Snapshot
+  Snapshot --> Prompt
+  Prompt --> OpenAI
+  OpenAI --> Response
+  Response --> UI
 ```
-*(Nếu muốn chạy ở port khác cổng 8080 mặc định, thiết lập biến môi trường `SPECTRA_PORT` trước khi chạy docker compose)*
 
----
+## Thành Phần Chính
 
-#### Terminal 2: Chạy Bank Simulator
-Chạy simulator bằng python ở môi trường local:
-```bash
+### Frontend
+
+- Vite + React.
+- Dashboard chính nằm trong `frontend/src`.
+- Floating chatbot được mount toàn app trong `frontend/src/components/layout/Layout.jsx`.
+- Chat UI nằm ở `frontend/src/components/ChatbotInterface.tsx`.
+- Lịch sử chat lưu theo phiên trong `localStorage`, tự đặt tên phiên theo câu hỏi đầu tiên.
+- UI hỗ trợ markdown, loading skeleton, mini-chart, phóng to/thu nhỏ, lịch sử phiên, clear history và security policy.
+
+### Backend
+
+- FastAPI service trong `src/spectra/web/server.py`.
+- Endpoint chatbot: `POST /api/advisor/chat`.
+- Backend đọc user từ session cookie, sau đó query database để dựng Data Snapshot.
+- Frontend không gửi trực tiếp budget/spent để tránh user sửa payload làm sai phân tích.
+
+### AI Orchestrator
+
+- Logic AI nằm trong `src/spectra/ai.py`.
+- Provider cloud chính: OpenAI.
+- Model mặc định: `gpt-5.5`.
+- Đường gọi chính: OpenAI Responses API.
+- Chat Completions chỉ còn là fallback tương thích SDK nếu Responses API lỗi.
+- System prompt gán vai "Fin", xưng "tớ - cậu", trả lời tự nhiên, có guardrail tài chính và bảo mật.
+
+## Luồng Chatbot Fin
+
+1. User mở widget Fin ở góc phải dưới.
+2. User nhập câu hỏi, ví dụ: "Tôi có thể mua đôi giày 2 triệu hôm nay không?"
+3. Frontend gửi:
+   - `question`
+   - tối đa 6 message gần nhất trong phiên hiện tại
+4. Backend dựng Data Snapshot:
+   - `budget`
+   - `spent`
+   - `days_remaining`
+   - `prediction`
+   - `remaining_budget`
+   - `alerts`
+   - `top_categories`
+   - `financial_health`
+   - `budget_utilization`
+   - `user_mood_context`
+   - `current_cycle`
+5. Prompt Orchestrator ghép:
+   - system instruction
+   - Data Snapshot
+   - conversation memory
+   - intent của câu hỏi hiện tại
+6. OpenAI trả lời.
+7. Backend trả về:
+   - `answer`
+   - `chart` nếu câu hỏi cần phân tích chi tiêu
+   - snapshot tóm tắt không nhạy cảm
+8. Frontend render markdown và mini-chart trong chat bubble.
+
+## Data Snapshot
+
+Data Snapshot được build ở backend từ bảng `app_tx_history` theo `user_id` trong phiên đăng nhập. Snapshot không chứa số tài khoản đầy đủ hoặc địa chỉ.
+
+Các trường quan trọng:
+
+- `budget`: tổng ngân sách đã cấu hình cho chu kỳ.
+- `spent`: tổng chi tiêu từ đầu chu kỳ.
+- `days_remaining`: số ngày còn lại.
+- `prediction`: dự báo chi tiêu cuối chu kỳ dựa trên burn rate hiện tại.
+- `remaining_budget`: ngân sách còn lại.
+- `alerts`: giao dịch bất thường so với lịch sử.
+- `top_categories`: các nhóm chi tiêu lớn nhất.
+- `financial_health`: `Safe`, `Watch`, `Critical` hoặc `Unknown`.
+- `user_mood_context`: chỉ dẫn tone cho Fin.
+
+## Logic Tài Chính
+
+Fin phải trả lời đúng trọng tâm câu hỏi mới nhất.
+
+- Nếu user chỉ chào/test: phản hồi xã giao, không tự phân tích ngân sách.
+- Nếu user hỏi mua gì đó: so sánh giá trị khoản mua với `remaining_budget`, `prediction`, top spending và trạng thái sức khỏe tài chính.
+- Nếu `prediction > budget`: cảnh báo sớm, gợi ý cắt giảm theo top 3 danh mục chi lớn nhất.
+- Nếu có `alerts`: hỏi user xác nhận giao dịch bất thường trước khi đưa lời khuyên chắc chắn.
+- Nếu `financial_health = Safe`: giọng thoải mái, khích lệ.
+- Nếu `financial_health = Watch`: nhắc nhẹ, không làm quá vấn đề.
+- Nếu `financial_health = Critical`: chân thành, quan tâm, không phán xét.
+- Nếu user hỏi đầu tư rủi ro cao: từ chối lịch sự và kéo về quản trị rủi ro cá nhân.
+
+## Prompt Và Guardrail
+
+System prompt của Fin yêu cầu:
+
+- Không nói "tôi là AI".
+- Không dùng câu mở đầu máy móc như "Dựa trên dữ liệu tài chính của bạn".
+- Không lộ thông tin định danh.
+- Không bịa dữ liệu khi thiếu số liệu.
+- Luôn phản hồi đồng cảm trước khi phân tích nếu user đang tâm sự.
+- Luôn kết thúc bằng một câu hỏi gợi mở liên quan đến thói quen hoặc bối cảnh chi tiêu.
+- Dùng conversation memory để không hỏi lại chuyện vừa nói.
+
+## Bảo Mật
+
+- `.env` đã nằm trong `.gitignore`; không commit API key.
+- Không đưa API key vào README, issue, screenshot hoặc chat log.
+- Vì key đã từng được dán vào cuộc trò chuyện, nên nên rotate key trên OpenAI dashboard sau khi test xong.
+- Supabase RLS cần bật policy:
+
+```sql
+CREATE POLICY "Users can only access their own transactions"
+ON app_tx_history
+FOR SELECT
+USING (auth.uid()::text = user_id);
+```
+
+Migration liên quan nằm tại `supabase/migrations/0004_app_tx_history_user_select_policy.sql`.
+
+## Cấu Hình Môi Trường
+
+File `.env` gốc cần có:
+
+```env
+DATABASE_URL=postgresql://...
+BASE_CURRENCY=VND
+AI_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-5.5
+SPECTRA_BASE_URL=http://localhost:8081
+```
+
+Không còn dùng biến cloud AI cũ. Nếu muốn chạy offline hạn chế:
+
+```env
+AI_PROVIDER=local
+```
+
+Khi dùng Docker, `docker-compose.yml` truyền các biến:
+
+- `AI_PROVIDER`
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL`
+- `DATABASE_URL`
+
+## Cách Chạy Dự Án
+
+### 1. Cài dependencies
+
+```powershell
+py -m pip install -e .
+cd frontend
+npm install
+cd ..
+```
+
+### 2. Chạy Spectra backend
+
+```powershell
+py -m spectra --serve --port 8081
+```
+
+### 3. Chạy frontend
+
+```powershell
+cd frontend
+npm run dev -- --host 127.0.0.1
+```
+
+Frontend thường chạy ở:
+
+```text
+http://localhost:3000
+```
+
+### 4. Chạy Bank Simulator
+
+```powershell
 cd bank_simulator
-python main.py
-```
-*(Nếu sử dụng Windows launcher, có thể dùng lệnh `py main.py`)*
-
-### 3. Truy cập các dịch vụ
-- **Main Service (Spectra Dashboard):** [http://localhost:8080](http://localhost:8080) (hoặc cổng bạn cấu hình)
-- **Bank Simulator (API Docs & UI):** [http://localhost:8000](http://localhost:8000) / [http://localhost:8000/docs](http://localhost:8000/docs)
-
----
-
-## 📊 Tính năng
-
-### Main Service (Spectra)
-- Dashboard với charts
-- Upload CSV/PDF/OFX
-- AI categorization
-- Budget tracking
-- Trends analysis
-
-### Bank Simulator (8000)
-- REST API (6 endpoints)
-- 69 users, 8,033 transactions
-- 3 personas: Student, Office Worker, High-Net-Worth
-- Anomaly detection (4.8%)
-- Balance prediction
-
----
-
-## 🗄️ Database
-
-**Supabase PostgreSQL**
-
-**Tables:**
-- Main: `app_*` (8 tables)
-- Bank Sim: `bank_*`, `user_*` (4 tables)
-
-**Data:**
-- 69 accounts
-- 8,033 transactions
-- 386 anomalies
-
----
-
-## 🔧 API Endpoints
-
-```
-GET /                          Health check
-GET /stats                     Statistics
-GET /users                     List users
-GET /transactions?user_id=...  Transactions
-GET /summary?user_id=...       Summary
-GET /anomalies?user_id=...     Anomalies
-GET /prediction?user_id=...    Prediction
+py main.py
 ```
 
-Docs: http://localhost:8000/docs
+Bank Simulator chạy ở:
 
----
-
-## 📁 Cấu trúc
-
-```
-personal-finance-ai-assistant/
-├── .env                      ← Cấu hình môi trường cho Spectra
-├── src/spectra/              ← Mã nguồn Main service (Spectra)
-├── supabase/migrations/      ← Cấu hình và migration cho database Supabase
-└── bank_simulator/           ← Dịch vụ giả lập ngân hàng (Bank Simulator)
-    ├── .env                  ← Cấu hình môi trường cho Bank Simulator
-    ├── main.py               ← API server & Dashboard của Bank Simulator
-    └── data_seeder.py        ← Script tạo dữ liệu mẫu cho ngân hàng
+```text
+http://localhost:8000
 ```
 
----
+### 5. Đăng nhập demo
 
-## 🛠️ Troubleshooting
+1. Mở `http://localhost:3000`.
+2. Chọn "Sign in with Bank".
+3. Bank Simulator redirect về Spectra.
+4. Dashboard hiển thị dữ liệu của user đã đăng nhập.
+5. Fin xuất hiện ở góc phải dưới và có thể chat ở mọi màn hình.
 
-**Port đã dùng:**
-```bash
-netstat -ano | findstr :8081
-taskkill /PID <PID> /F
+## Test Case Khuyến Nghị
+
+Sau khi login, mở Fin và hỏi:
+
+```text
+Tôi có thể mua đôi giày 2 triệu hôm nay không?
 ```
 
-**Database lỗi:**
-Check `DATABASE_URL` trong `.env` và `bank_simulator/.env`
+Kết quả đúng kỳ vọng:
 
-**Module not found:**
-```bash
+- Fin không trả lời "có" hoặc "không" ngay lập tức.
+- Fin kiểm tra ngân sách còn lại, dự báo cuối kỳ và nhóm chi tiêu lớn.
+- Nếu còn dư an toàn: trả lời thoải mái nhưng vẫn nhắc giới hạn hợp lý.
+- Nếu đã sát/vượt ngân sách: khuyên hoãn hoặc giảm khoản khác trước.
+- Nếu có anomaly: hỏi xác nhận giao dịch bất thường trước.
+
+Test câu xã giao:
+
+```text
+hello
+```
+
+Kết quả đúng kỳ vọng:
+
+- Fin chỉ chào lại tự nhiên.
+- Không tự phân tích ngân sách.
+- Không hiển thị mini-chart.
+
+## Các File Quan Trọng
+
+- `src/spectra/config.py`: cấu hình provider, model, secret và database.
+- `src/spectra/ai.py`: prompt, OpenAI call, fallback local, phân loại giao dịch.
+- `src/spectra/web/server.py`: API, build Data Snapshot, auth/session, dashboard data.
+- `frontend/src/components/ChatbotInterface.tsx`: floating chatbot UI, session history, message flow.
+- `frontend/src/api/services.js`: API client.
+- `frontend/src/index.css`: layout và style chatbot/dashboard.
+- `supabase/migrations/0004_app_tx_history_user_select_policy.sql`: RLS policy.
+- `bank_simulator/main.py`: service giả lập ngân hàng và SSO demo.
+
+## OpenAI Runtime Notes
+
+- Model mặc định dùng `gpt-5.5`, phù hợp cho reasoning và hội thoại tài chính có ngữ cảnh.
+- Responses API được ưu tiên vì là API hiện đại cho tác vụ assistant có instruction rõ ràng.
+- Backend không gửi dữ liệu định danh nhạy cảm trong prompt.
+- Prompt chỉ nhận snapshot tài chính tổng hợp và lịch sử chat ngắn.
+- Nếu OpenAI lỗi SDK endpoint, code fallback sang Chat Completions để tránh downtime.
+
+Tham khảo chính thức:
+
+- OpenAI models: https://platform.openai.com/docs/models
+- OpenAI Responses API: https://platform.openai.com/docs/api-reference/responses
+
+## Troubleshooting
+
+### Fin trả lời như rule cứng hoặc thiếu thông minh
+
+Kiểm tra `.env`:
+
+```env
+AI_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-5.5
+```
+
+Sau đó restart backend.
+
+### Login bank lỗi callback
+
+Đảm bảo:
+
+```env
+SPECTRA_BASE_URL=http://localhost:8081
+```
+
+và backend Spectra đang chạy ở port `8081`.
+
+### Không thấy chatbot
+
+Kiểm tra `FloatingAdvisorWidget` đã được mount trong `frontend/src/components/layout/Layout.jsx`, sau đó reload frontend.
+
+### Module psycopg/psycopg2 lỗi
+
+Dự án dùng `psycopg` v3. Cài lại:
+
+```powershell
 py -m pip install -e .
 ```
 
----
+### Build frontend
 
-**Version:** 1.0.0 | **Status:** ✅ Production Ready
+```powershell
+cd frontend
+npm run build
+```
+
+## Trạng Thái Hiện Tại
+
+- Cloud AI: OpenAI.
+- Legacy cloud config/key: đã gỡ khỏi source config, UI, Docker và lockfile.
+- Chatbot: floating toàn app, có lịch sử phiên, markdown, mini-chart, loading skeleton.
+- Security posture: API key chỉ nằm trong `.env` local, không đưa vào tài liệu.

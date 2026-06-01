@@ -256,7 +256,7 @@
         <div class="settings-row">
             <div class="settings-label">
                 Categorization Engine
-                <small>Controlled by <code>AI_PROVIDER</code> in your environment (`local`, `openai`, or `gemini`).</small>
+                <small>Controlled by <code>AI_PROVIDER</code> in your environment (`openai` or `local`).</small>
             </div>
             <span class="settings-badge" id="provider">—</span>
         </div>
@@ -875,7 +875,7 @@
 
             // Provider badge
             const provEl = document.getElementById('provider');
-            const provLabels = { local: 'Local · offline', openai: 'OpenAI', gemini: 'Gemini' };
+            const provLabels = { local: 'Local · offline', openai: 'OpenAI' };
             provEl.textContent = provLabels[s.provider] || s.provider;
             provEl.className = `settings-badge ${s.provider === 'local' ? 'local' : 'cloud'}`;
 

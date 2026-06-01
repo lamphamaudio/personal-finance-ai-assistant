@@ -26,7 +26,7 @@ from typing import List, Optional, Dict, Any
 from pathlib import Path
 from urllib.parse import quote, urlencode, urlparse
 
-import psycopg2
+import psycopg
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -170,7 +170,7 @@ class OverallStats(BaseModel):
 
 def get_db_connection():
     """Tạo kết nối database"""
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg.connect(DATABASE_URL)
 
 
 def row_to_dict(cursor, row) -> Dict[str, Any]:

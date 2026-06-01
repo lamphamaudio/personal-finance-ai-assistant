@@ -85,6 +85,9 @@ export const getTrends = () =>
 export const getSubscriptions = () => 
   api.get('/api/subscriptions');
 
+export const askAdvisor = (question, history = []) =>
+  api.post('/api/advisor/chat', { question, history });
+
 export const uploadFileRaw = (file) => {
   const formData = new FormData();
   formData.append('file', file);

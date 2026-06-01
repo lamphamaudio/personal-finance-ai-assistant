@@ -41,8 +41,8 @@ class Settings(BaseSettings):
         return v.strip().upper()
 
     # ── AI Provider ──────────────────────────────────────────────
-    ai_provider: Literal["gemini", "openai", "local"] = Field(
-        default="gemini",
+    ai_provider: Literal["openai", "local"] = Field(
+        default="openai",
         validation_alias=AliasChoices("AI_PROVIDER", "AI_PrOVIDER"),
     )
 
@@ -51,11 +51,8 @@ class Settings(BaseSettings):
     def _normalize_provider(cls, v: str) -> str:
         return v.strip().lower() if isinstance(v, str) else v
 
-    gemini_api_key: str = ""
-    gemini_model: str = "gemma-3-27b-it"
-
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-5.5"
 
     # ── Database ─────────────────────────────────────────────────
     database_url: str = Field(
@@ -104,9 +101,7 @@ class Settings(BaseSettings):
                 "GOOGLE_SHEETS_CREDENTIALS_B64 or GOOGLE_SHEETS_CREDENTIALS_FILE"
             )
 
-        if self.ai_provider == "gemini" and not self.gemini_api_key:
-            missing.append("GEMINI_API_KEY")
-        elif self.ai_provider == "openai" and not self.openai_api_key:
+        if self.ai_provider == "openai" and not self.openai_api_key:
             missing.append("OPENAI_API_KEY")
         # 'local' mode needs no API keys
 
