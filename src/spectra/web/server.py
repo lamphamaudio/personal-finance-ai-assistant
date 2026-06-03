@@ -15,11 +15,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Query, Request, UploadFile
+from fastapi import Body, FastAPI, File, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from spectra.chat.models import ChatRequest
+from spectra.chat.supervisor import ChatSupervisor, MissingOpenAIKeyError
 from spectra.categories import (
     RECURRING_SUBSCRIPTION,
     SUBSCRIPTIONS,
@@ -713,6 +715,42 @@ def api_auth_me(request: Request):
     return {"user": user}
 
 
+@app.get("/api/auth/current-context")
+def api_auth_current_context(request: Request):
+    """Return the authenticated Spectra user and linked Bank Simulator profile."""
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    user = _fetch_demo_user(user_id)
+    if not user:
+        response = JSONResponse({"error": "Session user no longer exists"}, status_code=401)
+        _clear_session_cookie(response, load_settings())
+        return response
+
+    account_number = str(user.get("account_number") or "")
+    account_number_masked = (
+        "*" * max(len(account_number) - 4, 0) + account_number[-4:]
+        if account_number
+        else ""
+    )
+    return {
+        "spectra": {
+            "authenticated": True,
+            "user_id": str(user["user_id"]),
+            "session_cookie": _SESSION_COOKIE,
+        },
+        "bank_simulator": {
+            "linked": True,
+            "user_id": str(user["user_id"]),
+            "persona_type": str(user.get("persona_type") or ""),
+            "bank_name": str(user.get("bank_name") or ""),
+            "account_number_masked": account_number_masked,
+            "has_current_balance": user.get("current_balance") is not None,
+        },
+    }
+
+
 @app.get("/api/auth/demo-users")
 def api_auth_demo_users():
     return {"users": _fetch_demo_users()}
@@ -738,6 +776,324 @@ def api_auth_logout():
     response = JSONResponse({"ok": True})
     _clear_session_cookie(response, settings)
     return response
+
+
+@app.post("/api/chat")
+async def api_chat(chat_request: ChatRequest, request: Request):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    from spectra.chat.context import build_chat_context
+    from spectra.chat.history import get_or_create_chat_session, save_chat_message, save_tool_call
+    from spectra.chat.memory import extract_memory_candidates
+
+    session = get_or_create_chat_session(user_id, chat_request.session_id)
+    session_id = str(session["id"])
+    chat_request = chat_request.model_copy(update={"session_id": session_id})
+    user_message = save_chat_message(
+        session_id=session_id,
+        user_id=user_id,
+        role="user",
+        content=chat_request.message,
+        metadata={"scope": chat_request.scope, "confirmation_id": chat_request.confirmation_id, "confirm": chat_request.confirm},
+    )
+    chat_context = build_chat_context(user_id, session_id, chat_request.message)
+    supervisor = ChatSupervisor(request=request, user_id=user_id, session_id=session_id, chat_context=chat_context)
+    try:
+        response = await supervisor.respond(chat_request)
+    except MissingOpenAIKeyError:
+        return JSONResponse(
+            {
+                "error": "OpenAI is not configured",
+                "message": "Thiếu OPENAI_API_KEY. Vui lòng cấu hình khóa OpenAI trước khi dùng chatbot.",
+            },
+            status_code=503,
+        )
+    assistant_message = save_chat_message(
+        session_id=session_id,
+        user_id=user_id,
+        role="assistant",
+        content=response.answer,
+        intent=response.intent.value if hasattr(response.intent, "value") else str(response.intent),
+        metadata={
+            "requires_confirmation": response.requires_confirmation,
+            "confirmation": response.confirmation.model_dump(mode="json") if response.confirmation else None,
+            "suggested_actions": [item.model_dump(mode="json") for item in response.suggested_actions],
+        },
+    )
+    for trace in response.tool_calls:
+        save_tool_call(
+            session_id=session_id,
+            message_id=assistant_message["id"],
+            user_id=user_id,
+            tool_name=trace.tool_name,
+            arguments=trace.arguments,
+            result_summary={"status": trace.status},
+            status=trace.status,
+            error_message=trace.error,
+        )
+    response.session_id = session_id
+    response.message_id = assistant_message["id"]
+    if not response.memory_updates:
+        response.memory_updates = extract_memory_candidates(
+            chat_request.message,
+            response.answer,
+            [trace.model_dump(mode="json") for trace in response.tool_calls],
+        )
+    return response.model_dump(mode="json")
+
+
+@app.get("/api/chat/sessions")
+def api_chat_sessions(request: Request, limit: int = Query(20)):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    from spectra.chat.history import list_chat_sessions
+
+    return {"sessions": list_chat_sessions(user_id, limit=limit)}
+
+
+@app.get("/api/chat/sessions/{session_id}/messages")
+def api_chat_session_messages(session_id: str, request: Request, limit: int = Query(50)):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    from spectra.chat.history import get_recent_messages
+
+    messages = get_recent_messages(session_id, user_id, limit=limit)
+    if not messages:
+        return {"messages": []}
+    return {"messages": messages}
+
+
+@app.post("/api/chat/sessions/{session_id}/archive")
+def api_chat_session_archive(session_id: str, request: Request):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    from spectra.chat.history import archive_chat_session
+
+    try:
+        return {"ok": True, "session": archive_chat_session(user_id, session_id)}
+    except KeyError:
+        return JSONResponse({"error": "Session not found"}, status_code=404)
+
+
+@app.delete("/api/chat/sessions/{session_id}")
+def api_chat_session_delete(session_id: str, request: Request):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    from spectra.chat.history import delete_chat_session
+
+    try:
+        return {"ok": True, "session": delete_chat_session(user_id, session_id)}
+    except KeyError:
+        return JSONResponse({"error": "Session not found"}, status_code=404)
+
+
+@app.get("/api/chat/memories")
+def api_chat_memories(request: Request):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    from spectra.chat.memory import get_user_memories
+
+    return {"memories": get_user_memories(user_id, limit=100)}
+
+
+@app.delete("/api/chat/memories/{memory_id}")
+def api_chat_memory_delete(memory_id: str, request: Request):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    from spectra.chat.memory import delete_user_memory
+
+    try:
+        return {"ok": True, "memory": delete_user_memory(user_id, memory_id)}
+    except KeyError:
+        return JSONResponse({"error": "Memory not found"}, status_code=404)
+
+
+@app.post("/api/chat/feedback")
+async def api_chat_feedback(request: Request):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    body = await request.json()
+    rating = str(body.get("rating") or "").strip().lower()
+    if rating not in {"up", "down"}:
+        return JSONResponse({"error": "rating must be up or down"}, status_code=400)
+
+    comment = str(body.get("comment") or "").strip()
+    if len(comment) > 1000:
+        return JSONResponse({"error": "comment is too long"}, status_code=400)
+
+    session_id = str(body.get("session_id") or "").strip()[:120]
+    message_id = str(body.get("message_id") or "").strip()[:120]
+    intent = str(body.get("intent") or "").strip()[:80]
+    with _get_db() as db:
+        row = db._conn.execute(
+            """
+            INSERT INTO app_chat_feedback (user_id, session_id, message_id, rating, comment, intent)
+            VALUES (?, ?, ?, ?, ?, ?)
+            RETURNING id
+            """,
+            (user_id, session_id, message_id, rating, comment, intent),
+        ).fetchone()
+        db._conn.commit()
+    return {"ok": True, "id": int(row[0]) if row else None}
+
+
+@app.get("/api/financial-health-score")
+def api_financial_health_score(
+    request: Request,
+    scope: str = Query("cycle"),
+    month: str = Query(""),
+    refresh: bool = Query(False),
+):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    normalized_scope = (scope or "cycle").strip().lower()
+    if normalized_scope not in _VALID_SUMMARY_SCOPES:
+        return JSONResponse({"error": "scope must be one of cycle, 90d, ytd"}, status_code=400)
+
+    from spectra.chat.finance_tools import get_anomalies_for_chat, get_balance_forecast_for_chat
+    from spectra.financial_health import calculate_financial_health_score
+
+    summary = api_summary(request, scope=normalized_scope)
+    budget = api_budget(request)
+    anomaly_scope = "90d" if normalized_scope in {"90d", "ytd"} else "cycle"
+    anomalies = get_anomalies_for_chat(user_id, limit=10, scope=anomaly_scope)
+    forecast = get_balance_forecast_for_chat(user_id)
+    result = calculate_financial_health_score(
+        user_id,
+        scope=normalized_scope,
+        month=(month or "").strip() or None,
+        summary_payload=summary if isinstance(summary, dict) else {},
+        anomaly_payload=anomalies,
+        forecast_payload=forecast,
+        budget_payload=budget if isinstance(budget, dict) else {},
+    )
+    result["snapshot"] = {
+        "stored": False,
+        "refresh_requested": bool(refresh),
+        "reason": "Snapshot persistence is deferred until a financial_health_scores migration is added.",
+    }
+    return result
+
+
+def _savings_goal_context(request: Request, user_id: str) -> dict[str, Any]:
+    from spectra.chat.finance_tools import get_balance_forecast_for_chat
+
+    summary = api_summary(request, scope="cycle")
+    summary_data = summary if isinstance(summary, dict) else {}
+    forecast = get_balance_forecast_for_chat(user_id)
+    return {
+        "total_income": summary_data.get("total_income"),
+        "total_spent": summary_data.get("total_spent"),
+        "average_monthly_income": summary_data.get("total_income"),
+        "average_monthly_expense": summary_data.get("total_spent"),
+        "available_monthly_cashflow": float(summary_data.get("total_income") or 0)
+        - float(summary_data.get("total_spent") or 0),
+        "by_category": summary_data.get("by_category") or {},
+        "forecasted_end_balance": forecast.get("predicted_end_of_month_balance"),
+    }
+
+
+@app.get("/api/savings-goals")
+def api_savings_goals(request: Request, status: str = Query("active")):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    from spectra.savings_goals import get_savings_goals
+
+    return get_savings_goals(user_id, status=status)
+
+
+@app.post("/api/savings-goals/plan")
+def api_savings_goals_plan(request: Request, payload: dict[str, Any] = Body(...)):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    from spectra.savings_goals import plan_savings_goal
+
+    try:
+        return plan_savings_goal(
+            user_id,
+            name=str(payload.get("name") or ""),
+            target_amount=payload.get("target_amount"),
+            current_amount=payload.get("current_amount") or 0,
+            target_date=str(payload.get("target_date") or ""),
+            currency=str(payload.get("currency") or "VND"),
+            context=_savings_goal_context(request, user_id),
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.post("/api/savings-goals/simulate")
+def api_savings_goals_simulate(request: Request, payload: dict[str, Any] = Body(...)):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    from spectra.savings_goals import simulate_savings_adjustment
+
+    try:
+        return simulate_savings_adjustment(
+            user_id,
+            target_amount=payload.get("target_amount"),
+            current_amount=payload.get("current_amount") or 0,
+            target_date=str(payload.get("target_date") or ""),
+            adjustments=list(payload.get("adjustments") or []),
+            currency=str(payload.get("currency") or "VND"),
+            context=_savings_goal_context(request, user_id),
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.post("/api/savings-goals")
+def api_savings_goals_create(request: Request, payload: dict[str, Any] = Body(...)):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    from spectra.savings_goals import create_savings_goal
+
+    try:
+        return create_savings_goal(user_id, {**payload, "context": _savings_goal_context(request, user_id)})
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.patch("/api/savings-goals/{goal_id}")
+def api_savings_goals_update(request: Request, goal_id: str, payload: dict[str, Any] = Body(...)):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    from spectra.savings_goals import update_savings_goal
+
+    try:
+        return update_savings_goal(user_id, goal_id, payload)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.post("/api/savings-goals/{goal_id}/archive")
+def api_savings_goals_archive(request: Request, goal_id: str):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    from spectra.savings_goals import archive_savings_goal
+
+    try:
+        return archive_savings_goal(user_id, goal_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
 
 
 @app.get("/sso/bank")
@@ -790,29 +1146,8 @@ def page_upload(request: Request):
 
 @app.get("/settings", response_class=HTMLResponse)
 def page_settings(request: Request):
-    return _serve_react_or_template(request, "settings.html")
-
     if (redirect := _setup_redirect_if_needed(request)):
         return redirect
-    return _serve_react_or_template(request, "dashboard.html")
-
-
-@app.get("/transactions", response_class=HTMLResponse)
-def page_transactions(request: Request):
-    if (redirect := _setup_redirect_if_needed(request)):
-        return redirect
-    return _serve_react_or_template(request, "transactions.html")
-
-
-@app.get("/upload", response_class=HTMLResponse)
-def page_upload(request: Request):
-    if (redirect := _setup_redirect_if_needed(request)):
-        return redirect
-    return _serve_react_or_template(request, "upload.html")
-
-
-@app.get("/settings", response_class=HTMLResponse)
-def page_settings(request: Request):
     return _serve_react_or_template(request, "settings.html")
 
 
@@ -869,6 +1204,7 @@ def api_summary(request: Request, scope: str = Query("cycle")):
     )
 
     with _get_db() as db:
+        effective_currency = _resolve_base_currency(load_settings(), db)
         rows = db._conn.execute(
             "SELECT date, clean_name, amount, category FROM app_tx_history WHERE user_id = ? AND date >= ? ORDER BY date DESC",
             (user_id, query_start),
@@ -960,6 +1296,8 @@ def api_summary(request: Request, scope: str = Query("cycle")):
     return {
         "total_spent": round(total_spent, 2),
         "total_income": round(total_income, 2),
+        "currency": effective_currency,
+        "base_currency": effective_currency,
         "subscriptions": round(subscriptions, 2),
         "uncategorized": uncategorized,
         "uncategorized_total": uncategorized_total,
@@ -2151,18 +2489,83 @@ def api_budget(request: Request):
     }
 
 
+@app.get("/api/budget/recommendation")
+def api_budget_recommendation(
+    request: Request,
+    scope: str = Query("cycle"),
+    goal_id: str = Query(""),
+    target_savings_amount: float | None = Query(None),
+):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    from spectra.budget_planner import recommend_budget_plan
+    from spectra.savings_goals import get_savings_goals
+
+    summary = api_summary(request, scope=scope)
+    budget = api_budget(request)
+    goals = get_savings_goals(user_id, status="active")
+    return recommend_budget_plan(
+        user_id,
+        scope=scope,
+        goal_id=(goal_id or None),
+        target_savings_amount=target_savings_amount,
+        summary_payload=summary if isinstance(summary, dict) else {},
+        budget_payload=budget if isinstance(budget, dict) else {},
+        goals_payload=goals,
+    )
+
+
+@app.post("/api/budget/simulate")
+def api_budget_simulate(request: Request, payload: dict[str, Any] = Body(...)):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    from spectra.budget_planner import simulate_budget_adjustment
+    from spectra.savings_goals import get_savings_goals
+
+    scope = str(payload.get("scope") or "cycle")
+    try:
+        return simulate_budget_adjustment(
+            user_id,
+            adjustments=list(payload.get("adjustments") or []),
+            scope=scope,
+            goal_id=str(payload.get("goal_id") or "") or None,
+            summary_payload=api_summary(request, scope=scope),
+            budget_payload=api_budget(request),
+            goals_payload=get_savings_goals(user_id, status="active"),
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.post("/api/budget/plan")
+def api_budget_plan(request: Request, payload: dict[str, Any] = Body(...)):
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    from spectra.budget_planner import upsert_budget_plan
+
+    try:
+        return upsert_budget_plan(user_id, budgets=list(payload.get("budgets") or []), scope=str(payload.get("scope") or "cycle"))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
 @app.patch("/api/budget/{category}")
 async def api_update_budget(category: str, request: Request):
     """Save or update a monthly budget limit for a category."""
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
     body = await request.json()
     limit = body.get("limit")
-    if limit is None or limit < 0:
-        return JSONResponse({"error": "limit must be a non-negative number"}, status_code=400)
+    from spectra.budget_planner import update_budget_limit
 
-    with _get_db() as db:
-        db.save_budget_limit(category, float(limit))
-
-    return {"ok": True, "category": category, "limit": limit}
+    try:
+        return update_budget_limit(user_id, category=category, limit=limit)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
 
 
 # â”€â”€ API: Trends â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
