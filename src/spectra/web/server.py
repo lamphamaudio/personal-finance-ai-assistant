@@ -1,4 +1,4 @@
-"""Spectra Web Dashboard â€” FastAPI backend."""
+"""Spectra Web Dashboard - FastAPI backend."""
 
 from __future__ import annotations
 
@@ -128,6 +128,9 @@ def _session_payload(user_id: str, settings: Settings) -> dict[str, Any]:
 
 
 def _read_session_user_id(request: Request) -> str | None:
+    state_user_id = str(getattr(request.state, "spectra_user_id", "") or "").strip()
+    if state_user_id:
+        return state_user_id
     settings = load_settings()
     token = request.cookies.get(_SESSION_COOKIE)
     if not token:
@@ -137,6 +140,14 @@ def _read_session_user_id(request: Request) -> str | None:
         return None
     user_id = str(payload.get("sub") or "").strip()
     return user_id or None
+
+
+def _require_session_user_id(request: Request) -> str | JSONResponse:
+    user_id = _read_session_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    request.state.spectra_user_id = user_id
+    return user_id
 
 
 def _set_session_cookie(response: Response, user_id: str, settings: Settings) -> None:
@@ -413,6 +424,7 @@ def _coerce_bool(value: Any, default: bool = False) -> bool:
 def _persist_learning(
     db: BookmarkDB,
     *,
+    user_id: str = "",
     tx_id: str | None,
     original_description: str,
     clean_name: str,
@@ -439,6 +451,7 @@ def _persist_learning(
             )
 
     db.record_learning_feedback(
+        user_id=user_id,
         tx_id=tx_id,
         original_description=normalized_original,
         clean_name=normalized_name,
@@ -454,6 +467,7 @@ def _simulate_rule_impact(
     rule_type: str,
     pattern: str,
     sample_text: str = "",
+    user_id: str = "",
 ) -> dict[str, Any]:
     from spectra.rules import match_rule
 
@@ -466,8 +480,10 @@ def _simulate_rule_impact(
         """
         SELECT tx_id, date, clean_name, original_description, category
         FROM app_tx_history
+        WHERE user_id = ?
         ORDER BY date DESC, tx_id DESC
-        """
+        """,
+        (str(user_id or ""),),
     ).fetchall()
 
     examples: list[dict[str, Any]] = []
@@ -686,7 +702,7 @@ def _build_summary_insights(
     return insights[:4]
 
 
-# â”€â”€ Pages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- Pages --------------------------------------------------------
 
 
 def _serve_react_or_template(request: Request, template_name: str):
@@ -704,9 +720,9 @@ def page_login(request: Request):
 
 @app.get("/api/auth/me")
 def api_auth_me(request: Request):
-    user_id = _read_session_user_id(request)
-    if not user_id:
-        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     user = _fetch_demo_user(user_id)
     if not user:
         response = JSONResponse({"error": "Session user no longer exists"}, status_code=401)
@@ -718,9 +734,9 @@ def api_auth_me(request: Request):
 @app.get("/api/auth/current-context")
 def api_auth_current_context(request: Request):
     """Return the authenticated Spectra user and linked Bank Simulator profile."""
-    user_id = _read_session_user_id(request)
-    if not user_id:
-        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
 
     user = _fetch_demo_user(user_id)
     if not user:
@@ -780,9 +796,9 @@ def api_auth_logout():
 
 @app.post("/api/chat")
 async def api_chat(chat_request: ChatRequest, request: Request):
-    user_id = _read_session_user_id(request)
-    if not user_id:
-        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
 
     from spectra.chat.context import build_chat_context
     from spectra.chat.history import get_or_create_chat_session, save_chat_message, save_tool_call
@@ -846,9 +862,9 @@ async def api_chat(chat_request: ChatRequest, request: Request):
 
 @app.get("/api/chat/sessions")
 def api_chat_sessions(request: Request, limit: int = Query(20)):
-    user_id = _read_session_user_id(request)
-    if not user_id:
-        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     from spectra.chat.history import list_chat_sessions
 
     return {"sessions": list_chat_sessions(user_id, limit=limit)}
@@ -856,9 +872,9 @@ def api_chat_sessions(request: Request, limit: int = Query(20)):
 
 @app.get("/api/chat/sessions/{session_id}/messages")
 def api_chat_session_messages(session_id: str, request: Request, limit: int = Query(50)):
-    user_id = _read_session_user_id(request)
-    if not user_id:
-        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     from spectra.chat.history import get_recent_messages
 
     messages = get_recent_messages(session_id, user_id, limit=limit)
@@ -1162,22 +1178,65 @@ def page_subscriptions(request: Request):
 
 
 @app.get("/api/summary")
-def api_summary(request: Request, scope: str = Query("cycle")):
+def api_summary(
+    request: Request,
+    scope: str = Query("cycle"),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+):
     """Return dashboard-level stats."""
     scope = (scope or "cycle").strip().lower()
-    if scope not in _VALID_SUMMARY_SCOPES:
+    date_from = (date_from or "").strip()
+    date_to = (date_to or "").strip()
+    custom_period = bool(date_from or date_to)
+    if not custom_period and scope not in _VALID_SUMMARY_SCOPES:
         return JSONResponse(
             {"error": "scope must be one of cycle, 90d, ytd"},
+            status_code=400,
+        )
+    if custom_period and (not date_from or not date_to):
+        return JSONResponse(
+            {"error": "date_from and date_to must be provided together"},
             status_code=400,
         )
 
     preferences = _load_app_preferences()
     cycle_rule = preferences["cycle_rule"]
-    user_id = _read_session_user_id(request) or ""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
 
     from datetime import date, timedelta
     today = date.today()
-    if scope == "cycle":
+    if custom_period:
+        try:
+            period_start = parse_iso_date(date_from)
+            period_end = parse_iso_date(date_to)
+        except ValueError:
+            return JSONResponse(
+                {"error": "date_from and date_to must be ISO dates"},
+                status_code=400,
+            )
+        if period_start >= period_end:
+            return JSONResponse(
+                {"error": "date_from must be before date_to"},
+                status_code=400,
+            )
+        query_start = period_start
+        expected_next_month_year = period_start.year + 1 if period_start.month == 12 else period_start.year
+        expected_next_month = 1 if period_start.month == 12 else period_start.month + 1
+        is_whole_month = (
+            period_start.day == 1
+            and period_end.day == 1
+            and period_end.year == expected_next_month_year
+            and period_end.month == expected_next_month
+        )
+        if is_whole_month:
+            scope_label = f"Tháng {period_start.month}/{period_start.year}"
+        else:
+            scope_label = f"{period_start.isoformat()} to {(period_end - timedelta(days=1)).isoformat()}"
+        scope = "custom"
+    elif scope == "cycle":
         period_start, period_end = cycle_window_for(today, cycle_rule)
         scope_label = format_cycle_label(period_start, period_end)
         query_start = period_start
@@ -1206,13 +1265,21 @@ def api_summary(request: Request, scope: str = Query("cycle")):
     with _get_db() as db:
         effective_currency = _resolve_base_currency(load_settings(), db)
         rows = db._conn.execute(
-            "SELECT date, clean_name, amount, category FROM app_tx_history WHERE user_id = ? AND date >= ? ORDER BY date DESC",
-            (user_id, query_start),
+            """
+            SELECT date, clean_name, amount, category
+            FROM app_tx_history
+            WHERE user_id = ? AND date >= ? AND date < ?
+            ORDER BY date DESC
+            """,
+            (user_id, query_start, period_end),
         ).fetchall()
-        budget_limits = db.get_budget_limits()
+        budget_limits = db.get_budget_limits(user_id)
         uncat_row = db._conn.execute(
-            "SELECT COUNT(*) FROM app_tx_history WHERE user_id = ? AND category = ?",
-            (user_id, UNCATEGORIZED),
+            """
+            SELECT COUNT(*) FROM app_tx_history
+            WHERE user_id = ? AND category = ? AND date >= ? AND date < ?
+            """,
+            (user_id, UNCATEGORIZED, period_start, period_end),
         ).fetchone()
         uncategorized_total = int(uncat_row[0] if uncat_row else 0)
 
@@ -1228,6 +1295,8 @@ def api_summary(request: Request, scope: str = Query("cycle")):
     monthly_ranges: dict[str, dict[str, str]] = {}
     merchant_totals: Counter = Counter()
     in_scope_count = 0
+    income_count = 0
+    expense_count = 0
 
     def _monthly_bucket(tx_date):
         if scope == "cycle":
@@ -1253,11 +1322,13 @@ def api_summary(request: Request, scope: str = Query("cycle")):
         monthly_ranges[month] = {"start": bucket_start.isoformat(), "end": bucket_end.isoformat()}
 
         if amount < 0:
+            expense_count += 1
             monthly[month] += abs(amount)
             total_spent += abs(amount)
             by_category[cat] += abs(amount)
             merchant_totals[clean_name] += abs(amount)
         else:
+            income_count += 1
             total_income += amount
 
         if cat == UNCATEGORIZED:
@@ -1299,6 +1370,9 @@ def api_summary(request: Request, scope: str = Query("cycle")):
         "currency": effective_currency,
         "base_currency": effective_currency,
         "subscriptions": round(subscriptions, 2),
+        "transaction_count": in_scope_count,
+        "income_count": income_count,
+        "expense_count": expense_count,
         "uncategorized": uncategorized,
         "uncategorized_total": uncategorized_total,
         "by_category": {k: round(v, 2) for k, v in sorted(by_category.items(), key=lambda x: -x[1])},
@@ -1320,7 +1394,7 @@ def api_summary(request: Request, scope: str = Query("cycle")):
     }
 
 
-# â”€â”€ API: Transactions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- API: Transactions --------------------------------------------
 
 @app.get("/api/transactions")
 def api_transactions(
@@ -1334,7 +1408,9 @@ def api_transactions(
     date_to: str = Query(""),
 ):
     """Return paginated transactions from history with SQL-level filtering and paging."""
-    user_id = _read_session_user_id(request) or ""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     where_clauses = ["user_id = ?"]
     params = [user_id]
 
@@ -1414,6 +1490,9 @@ def api_transactions(
 @app.patch("/api/transactions/{tx_id}")
 async def api_update_transaction(tx_id: str, request: Request):
     """Update merchant name and/or category for a transaction."""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     body = await request.json()
     new_category = body.get("category")
     new_merchant = body.get("merchant")
@@ -1422,8 +1501,8 @@ async def api_update_transaction(tx_id: str, request: Request):
     with _get_db() as db:
         # Get current merchant name for this transaction
         row = db._conn.execute(
-            "SELECT clean_name, original_description, category FROM app_tx_history WHERE tx_id = ?",
-            (tx_id,),
+            "SELECT clean_name, original_description, category FROM app_tx_history WHERE tx_id = ? AND user_id = ?",
+            (tx_id, user_id),
         ).fetchone()
 
         if not row:
@@ -1437,15 +1516,15 @@ async def api_update_transaction(tx_id: str, request: Request):
 
         if new_merchant:
             db._conn.execute(
-                "UPDATE app_tx_history SET clean_name = ? WHERE tx_id = ?",
-                (merchant_name, tx_id),
+                "UPDATE app_tx_history SET clean_name = ? WHERE tx_id = ? AND user_id = ?",
+                (merchant_name, tx_id, user_id),
             )
 
         if new_category:
             # Also update the category directly on this transaction
             db._conn.execute(
-                "UPDATE app_tx_history SET category = ? WHERE tx_id = ?",
-                (new_category, tx_id),
+                "UPDATE app_tx_history SET category = ? WHERE tx_id = ? AND user_id = ?",
+                (new_category, tx_id, user_id),
             )
         db._conn.commit()
 
@@ -1457,6 +1536,7 @@ async def api_update_transaction(tx_id: str, request: Request):
             category=str(category_name),
             source="manual_edit",
             apply_to_future=apply_to_future,
+            user_id=user_id,
         )
 
     return {"ok": True, "id": tx_id}
@@ -1465,6 +1545,9 @@ async def api_update_transaction(tx_id: str, request: Request):
 @app.post("/api/transactions/bulk-category")
 async def api_bulk_update_category(request: Request):
     """Apply one category to multiple transactions quickly."""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     body = await request.json()
     ids = body.get("ids") or []
     category = str(body.get("category") or "").strip()
@@ -1482,12 +1565,12 @@ async def api_bulk_update_category(request: Request):
     with _get_db() as db:
         placeholders = ",".join("?" for _ in cleaned_ids)
         merchant_rows = db._conn.execute(
-            f"SELECT tx_id, clean_name, original_description FROM app_tx_history WHERE tx_id IN ({placeholders})",
-            cleaned_ids,
+            f"SELECT tx_id, clean_name, original_description FROM app_tx_history WHERE user_id = ? AND tx_id IN ({placeholders})",
+            [user_id, *cleaned_ids],
         ).fetchall()
         db._conn.execute(
-            f"UPDATE app_tx_history SET category = ? WHERE tx_id IN ({placeholders})",
-            [category, *cleaned_ids],
+            f"UPDATE app_tx_history SET category = ? WHERE user_id = ? AND tx_id IN ({placeholders})",
+            [category, user_id, *cleaned_ids],
         )
         db._conn.commit()
 
@@ -1500,29 +1583,37 @@ async def api_bulk_update_category(request: Request):
                 category=category,
                 source="bulk_edit",
                 apply_to_future=apply_to_future,
+                user_id=user_id,
             )
 
-    return {"ok": True, "updated": len(cleaned_ids), "category": category}
+    return {"ok": True, "updated": len(merchant_rows), "category": category}
 
 
-# â”€â”€ API: Categories â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- API: Categories ----------------------------------------------
 
 
 @app.get("/api/categories")
-def api_categories():
+def api_categories(request: Request):
     """Return all known categories."""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     with _get_db() as db:
         cats = db._conn.execute(
-            "SELECT DISTINCT category FROM app_tx_history WHERE category != ? ORDER BY category",
-            (UNCATEGORIZED,),
+            "SELECT DISTINCT category FROM app_tx_history WHERE user_id = ? AND category != ? ORDER BY category",
+            (user_id, UNCATEGORIZED),
         ).fetchall()
-    return {"categories": [normalize_category(row[0]) for row in cats]}
+    known_cats = [normalize_category(row[0]) for row in cats]
+    seed_cats = [normalize_category(row[1]) for row in build_seed_data()]
+    return {"categories": sorted(set(known_cats + seed_cats))}
 
 
 @app.get("/api/categories/options")
 def api_categories_options(request: Request):
     """Return all categories."""
-    user_id = _read_session_user_id(request) or ""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     with _get_db() as db:
         cats = db._conn.execute(
             "SELECT DISTINCT category FROM app_tx_history WHERE user_id = ? AND category != ? ORDER BY category",
@@ -1532,26 +1623,33 @@ def api_categories_options(request: Request):
     other_cats = [normalize_category(row[1]) for row in build_seed_data()]
     return {"categories": sorted(set(known_cats + other_cats))}
 
-# â”€â”€ API: Settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- API: Settings ------------------------------------------------
 
 
 @app.get("/api/settings")
-def api_settings():
+def api_settings(request: Request):
     """Return current config for the settings page."""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     settings = load_settings()
     with _get_db() as db:
         preferences = _load_app_preferences(db)
         effective_currency = _resolve_base_currency(settings, db)
         requires_currency_setup = _requires_base_currency_setup(db, settings)
-        tx_count = db._conn.execute("SELECT COUNT(*) FROM app_tx_history").fetchone()[0]
+        tx_count = db._conn.execute("SELECT COUNT(*) FROM app_tx_history WHERE user_id = ?", (user_id,)).fetchone()[0]
         merchant_count = db._conn.execute("SELECT COUNT(*) FROM app_merchant_categories").fetchone()[0]
-        feedback_count = db._conn.execute("SELECT COUNT(*) FROM app_learning_feedback").fetchone()[0]
+        feedback_count = db._conn.execute(
+            "SELECT COUNT(*) FROM app_learning_feedback WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0]
         active_rule_count = db._conn.execute(
-            "SELECT COUNT(*) FROM app_category_rules WHERE is_active = true"
+            "SELECT COUNT(*) FROM app_category_rules WHERE user_id = ? AND is_active = true",
+            (user_id,),
         ).fetchone()[0]
         cats = db._conn.execute(
-            "SELECT DISTINCT category FROM app_tx_history WHERE category != ?",
-            (UNCATEGORIZED,),
+            "SELECT DISTINCT category FROM app_tx_history WHERE user_id = ? AND category != ?",
+            (user_id, UNCATEGORIZED),
         ).fetchall()
     return {
         "provider": settings.ai_provider,
@@ -1571,6 +1669,9 @@ def api_settings():
 @app.patch("/api/settings/preferences")
 async def api_update_preferences(request: Request):
     """Save dashboard-local preferences such as theme and cycle start day."""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     body = await request.json()
     updates: dict[str, str] = {}
 
@@ -1642,10 +1743,13 @@ async def api_update_preferences(request: Request):
 
 
 @app.get("/api/settings/rules")
-def api_get_category_rules():
+def api_get_category_rules(request: Request):
     """Return user-defined categorization rules."""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     with _get_db() as db:
-        rules = db.get_category_rules()
+        rules = db.get_category_rules(user_id)
     return {
         "rules": rules,
         "valid_rule_types": sorted(VALID_RULE_TYPES),
@@ -1660,6 +1764,9 @@ def api_get_category_rules():
 @app.post("/api/settings/rules")
 async def api_create_category_rule(request: Request):
     """Create a categorization rule (contains/regex => category)."""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     body = await request.json()
     pattern = str(body.get("pattern") or "").strip()
     category = str(body.get("category") or "").strip()
@@ -1684,7 +1791,7 @@ async def api_create_category_rule(request: Request):
             return JSONResponse({"error": f"Invalid regex: {exc}"}, status_code=400)
 
     with _get_db() as db:
-        rule = db.add_category_rule(rule_type=rule_type, pattern=pattern, category=category)
+        rule = db.add_category_rule(rule_type=rule_type, pattern=pattern, category=category, user_id=user_id)
 
     return {"ok": True, "rule": rule}
 
@@ -1692,6 +1799,9 @@ async def api_create_category_rule(request: Request):
 @app.patch("/api/settings/rules/{rule_id}")
 async def api_update_category_rule(rule_id: int, request: Request):
     """Toggle or reorder a categorization rule."""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     body = await request.json()
     move = str(body.get("move") or "").strip().lower()
     is_active = body.get("is_active") if "is_active" in body else None
@@ -1699,11 +1809,12 @@ async def api_update_category_rule(rule_id: int, request: Request):
     with _get_db() as db:
         try:
             if move:
-                rules = db.move_category_rule(rule_id, move)
+                rules = db.move_category_rule(rule_id, move, user_id=user_id)
                 rule = next((item for item in rules if int(item["id"]) == int(rule_id)), None)
             else:
                 rule = db.update_category_rule(
                     rule_id,
+                    user_id=user_id,
                     is_active=_coerce_bool(is_active) if is_active is not None else None,
                 )
         except ValueError as exc:
@@ -1719,6 +1830,9 @@ async def api_update_category_rule(rule_id: int, request: Request):
 @app.post("/api/settings/rules/test")
 async def api_test_category_rule(request: Request):
     """Preview whether a rule would match sample text and historical rows."""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     body = await request.json()
     pattern = str(body.get("pattern") or "").strip()
     sample_text = str(body.get("sample_text") or "").strip()
@@ -1745,34 +1859,45 @@ async def api_test_category_rule(request: Request):
             rule_type=rule_type,
             pattern=pattern,
             sample_text=sample_text,
+            user_id=user_id,
         )
 
     return {"ok": True, **preview}
 
 
 @app.delete("/api/settings/rules/{rule_id}")
-def api_delete_category_rule(rule_id: int):
+def api_delete_category_rule(rule_id: int, request: Request):
     """Delete a categorization rule by ID."""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     with _get_db() as db:
-        deleted = db.delete_category_rule(rule_id)
+        deleted = db.delete_category_rule(rule_id, user_id=user_id)
     if not deleted:
         return JSONResponse({"error": "Rule not found"}, status_code=404)
     return {"ok": True, "id": rule_id}
 
 
 @app.get("/api/settings/learning")
-def api_learning_summary():
+def api_learning_summary(request: Request):
     """Return recent learning events and summary counters."""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     with _get_db() as db:
-        events = db.get_recent_learning_feedback(limit=40)
-        feedback_count = db._conn.execute("SELECT COUNT(*) FROM app_learning_feedback").fetchone()[0]
+        events = db.get_recent_learning_feedback(limit=40, user_id=user_id)
+        feedback_count = db._conn.execute(
+            "SELECT COUNT(*) FROM app_learning_feedback WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0]
         override_count = db._conn.execute("SELECT COUNT(*) FROM app_user_overrides").fetchone()[0]
         uncategorized_count = db._conn.execute(
-            "SELECT COUNT(*) FROM app_tx_history WHERE category = ?",
-            (UNCATEGORIZED,),
+            "SELECT COUNT(*) FROM app_tx_history WHERE user_id = ? AND category = ?",
+            (user_id, UNCATEGORIZED),
         ).fetchone()[0]
         learned_future_count = db._conn.execute(
-            "SELECT COUNT(*) FROM app_learning_feedback WHERE apply_to_future = true"
+            "SELECT COUNT(*) FROM app_learning_feedback WHERE user_id = ? AND apply_to_future = true",
+            (user_id,),
         ).fetchone()[0]
 
     return {
@@ -1787,16 +1912,22 @@ def api_learning_summary():
 
 
 @app.post("/api/settings/learning/reapply")
-def api_reapply_learning():
+def api_reapply_learning(request: Request):
     """Re-run deterministic learning on historical transactions."""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     with _get_db() as db:
-        result = db.reapply_learning_to_history()
+        result = db.reapply_learning_to_history(user_id)
     return {"ok": True, **result}
 
 
 @app.post("/api/settings/reset-db")
 async def api_reset_db(request: Request):
     """Reset Postgres data after explicit confirmation."""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     body = await request.json()
     if body.get("confirm") != "RESET":
         return JSONResponse(
@@ -1805,7 +1936,7 @@ async def api_reset_db(request: Request):
         )
 
     with _get_db() as db:
-        deleted = db.reset_all_data()
+        deleted = db.reset_all_data(user_id)
 
     logger.warning("Postgres DB reset requested from settings page: %s", deleted)
     return {
@@ -1815,7 +1946,7 @@ async def api_reset_db(request: Request):
     }
 
 
-# â”€â”€ API: Upload & Process â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- API: Upload & Process ----------------------------------------
 
 
 def _bank_transaction_to_parsed(row: dict[str, Any], base_currency: str):
@@ -1893,7 +2024,7 @@ async def _stream_processed_transactions(
     with _get_db() as db:
         new_txns = [t for t in parsed if not db.is_seen(t.id, user_id=user_id)]
         overrides = db.get_overrides()
-        category_rules = db.get_category_rules()
+        category_rules = db.get_category_rules(user_id)
         merchant_db = db.get_merchant_categories()
         training_data = db.get_training_data()
 
@@ -2075,8 +2206,11 @@ async def api_import_bank(request: Request):
 
 
 @app.post("/api/upload")
-async def api_upload(file: UploadFile = File(...)):
+async def api_upload(request: Request, file: UploadFile = File(...)):
     """Upload a supported file, parse & categorise, stream progress via SSE."""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     supported_file_types = [".csv", ".pdf", ".ofx"]
     import json as _json
     from fastapi.responses import StreamingResponse as _SR
@@ -2107,14 +2241,14 @@ async def api_upload(file: UploadFile = File(...)):
             return f"data: {payload}\n\n"
 
         try:
-            # â”€â”€ Phase 1: save to temp â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # -- Phase 1: save to temp ------------------------------
             yield evt(5, "Saving file...")
             import asyncio, tempfile, shutil
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 tmp.write(file_bytes)
                 tmp_path = tmp.name
 
-            # â”€â”€ Phase 2: parse â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # -- Phase 2: parse -------------------------------------
             yield evt(15, "Parsing transactions...")
             await asyncio.sleep(0)  # yield control so event is flushed
             try:
@@ -2130,17 +2264,17 @@ async def api_upload(file: UploadFile = File(...)):
             finally:
                 Path(tmp_path).unlink(missing_ok=True)
 
-            async for chunk in _stream_processed_transactions(parsed, settings, base_currency):
+            async for chunk in _stream_processed_transactions(parsed, settings, base_currency, user_id=user_id):
                 yield chunk
             return
 
-            # â”€â”€ Phase 3: dedup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # -- Phase 3: dedup -------------------------------------
             yield evt(25, "Checking for duplicates...")
             await asyncio.sleep(0)
             with _get_db() as db:
-                new_txns = [t for t in parsed if not db.is_seen(t.id)]
+                new_txns = [t for t in parsed if not db.is_seen(t.id, user_id=user_id)]
                 overrides = db.get_overrides()
-                category_rules = db.get_category_rules()
+                category_rules = db.get_category_rules(user_id)
                 merchant_db = db.get_merchant_categories()
                 training_data = db.get_training_data()
 
@@ -2151,7 +2285,7 @@ async def api_upload(file: UploadFile = File(...)):
 
             n = len(new_txns)
 
-            # â”€â”€ Phase 4: categorise (25% â†’ 92%, per transaction) â”€â”€â”€
+            # -- Phase 4: categorise (25% -> 92%, per transaction) ---
             from spectra.ai import CategorisedTransaction
 
             # Pre-categorise from overrides (instant)
@@ -2247,7 +2381,7 @@ async def api_upload(file: UploadFile = File(...)):
                                          base_currency=base_currency)
                     categorised.extend(results)
 
-            # â”€â”€ Phase 5: recurring detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # -- Phase 5: recurring detection -----------------------
             yield evt(94, "Detecting recurring payments...")
             await asyncio.sleep(0)
             with _get_db() as db:
@@ -2255,7 +2389,7 @@ async def api_upload(file: UploadFile = File(...)):
             from spectra.recurring import apply_recurring_tags
             apply_recurring_tags(categorised, history)
 
-            # â”€â”€ Phase 6: FX conversion â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # -- Phase 6: FX conversion -----------------------------
             yield evt(97, "Converting currencies...")
             await asyncio.sleep(0)
             from spectra.fx import convert_currency
@@ -2266,7 +2400,7 @@ async def api_upload(file: UploadFile = File(...)):
                     t.original_amount, t.original_currency = orig_amt, orig_cur
                     t.currency = base_currency
 
-            # â”€â”€ Done â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # -- Done -----------------------------------------------
             preview = []
             for t in categorised:
                 row = {
@@ -2310,9 +2444,11 @@ async def api_upload(file: UploadFile = File(...)):
 @app.post("/api/confirm")
 async def api_confirm(request: Request):
     """Confirm and save previously previewed transactions to the DB."""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
     body = await request.json()
     transactions = body.get("transactions", [])
-    user_id = _read_session_user_id(request) or ""
 
     if not transactions:
         return {"ok": False, "message": "No transactions to save"}
@@ -2346,6 +2482,7 @@ async def api_confirm(request: Request):
             apply_to_future = _coerce_bool(t.get("apply_to_future"), True)
             _persist_learning(
                 db,
+                user_id=user_id,
                 tx_id=str(ct.id),
                 original_description=str(ct.original_description),
                 clean_name=str(ct.clean_name),
@@ -2381,23 +2518,23 @@ async def api_confirm(request: Request):
                 refresh_dashboard(sheets)
                 return {
                     "ok": True,
-                    "message": f"Saved {len(cats)} transactions + synced to Sheets Â· learned {learned_count} future mapping(s)",
+                    "message": f"Saved {len(cats)} transactions + synced to Sheets; learned {learned_count} future mapping(s)",
                 }
             except Exception as e:
                 logger.warning("Sheets sync failed: %s", e)
                 return {
                     "ok": True,
-                    "message": f"Saved {len(cats)} transactions Â· learned {learned_count} future mapping(s) (Sheets sync failed)",
+                    "message": f"Saved {len(cats)} transactions; learned {learned_count} future mapping(s) (Sheets sync failed)",
                 }
 
     return {
         "ok": True,
-        "message": f"Saved {len(cats)} transactions to local DB Â· learned {learned_count} future mapping(s)",
+        "message": f"Saved {len(cats)} transactions to local DB; learned {learned_count} future mapping(s)",
     }
 
 
 
-# â”€â”€ Pages: Budget & Trends â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- Pages: Budget & Trends ---------------------------------------
 
 
 @app.get("/budget", response_class=HTMLResponse)
@@ -2414,7 +2551,7 @@ def page_trends(request: Request):
     return _serve_react_or_template(request, "trends.html")
 
 
-# â”€â”€ API: Budget â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- API: Budget --------------------------------------------------
 
 
 @app.get("/api/budget")
@@ -2422,7 +2559,9 @@ def api_budget(request: Request):
     """Return per-category budget status for the current month."""
     preferences = _load_app_preferences()
     current_cycle = _build_cycle_payload(preferences["cycle_rule"])
-    user_id = _read_session_user_id(request) or ""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
 
     with _get_db() as db:
         # All expense rows for the current financial cycle
@@ -2436,7 +2575,7 @@ def api_budget(request: Request):
             (user_id, current_cycle["start"], current_cycle["end"]),
         ).fetchall()
 
-        limits = db.get_budget_limits()
+        limits = db.get_budget_limits(user_id)
 
         # All-time categories so we can show unspent ones too
         all_cats = db._conn.execute(
@@ -2568,7 +2707,7 @@ async def api_update_budget(category: str, request: Request):
         return JSONResponse({"error": str(exc)}, status_code=400)
 
 
-# â”€â”€ API: Trends â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- API: Trends --------------------------------------------------
 
 
 @app.get("/api/trends")
@@ -2578,7 +2717,9 @@ def api_trends(request: Request):
 
     preferences = _load_app_preferences()
     cycle_rule = preferences["cycle_rule"]
-    user_id = _read_session_user_id(request) or ""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
 
     with _get_db() as db:
         rows = db._conn.execute(
@@ -2660,7 +2801,9 @@ def api_subscriptions(request: Request):
 
     preferences = _load_app_preferences()
     cycle_start, cycle_end = cycle_window_for(date.today(), preferences["cycle_rule"])
-    user_id = _read_session_user_id(request) or ""
+    user_id = _require_session_user_id(request)
+    if isinstance(user_id, JSONResponse):
+        return user_id
 
     with _get_db() as db:
         rows = db._conn.execute(
@@ -2775,12 +2918,12 @@ def api_subscriptions(request: Request):
     }
 
 
-# â”€â”€ Launch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- Launch -------------------------------------------------------
 
 
 def serve(host: str = "127.0.0.1", port: int = 8080) -> None:
     """Launch the Spectra dashboard server."""
     import uvicorn
-    print(f"\n  ðŸŒŸ Spectra Dashboard running at http://{host}:{port}\n")
+    print(f"\n  Spectra Dashboard running at http://{host}:{port}\n")
     uvicorn.run(app, host=host, port=port, log_level="warning")
 

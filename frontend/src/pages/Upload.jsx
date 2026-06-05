@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { useBankImporter } from '../hooks/useSSE';
@@ -288,8 +288,6 @@ export default function Upload() {
               <tbody>
                 {previewData.map((t, index) => {
                   const isExpense = t.amount < 0;
-                  const isUncat = t.category === 'Chưa phân loại';
-
                   // AI Suggestions layout
                   const sourceText = classificationSourceLabel(t.classification_source);
                   const confidenceText = confidenceLabel(t.category_confidence);

@@ -62,3 +62,27 @@ def test_recommend_budget_plan_returns_data(monkeypatch):
 
     assert result.status == "success"
     assert result.data["recommended_budgets"]
+
+
+def test_update_budget_limit_saves_user_scoped_limit(monkeypatch):
+    from spectra import budget_planner
+    from spectra.web import server
+
+    captured = {}
+
+    class FakeDb:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def save_budget_limit(self, category, monthly_limit, user_id=""):
+            captured.update({"category": category, "monthly_limit": monthly_limit, "user_id": user_id})
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDb())
+
+    result = budget_planner.update_budget_limit("user-budget", category="Ăn uống", limit=3_000_000)
+
+    assert result["ok"] is True
+    assert captured == {"category": "Ăn uống", "monthly_limit": 3_000_000.0, "user_id": "user-budget"}

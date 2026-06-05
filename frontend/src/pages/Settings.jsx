@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import {
@@ -19,7 +19,6 @@ export default function Settings() {
   const {
     themePreference,
     changeThemePreference,
-    currency,
     setCurrency,
     showToast,
     refreshPreferences: refreshGlobalPreferences,

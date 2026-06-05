@@ -196,11 +196,11 @@ def compare_budget_vs_actual(user_id: str, *, scope: str = "cycle", summary_payl
 def update_budget_limit(user_id: str, *, category: str, limit: float) -> dict[str, Any]:
     from spectra.web import server
 
-    del user_id
+    scoped_user = str(user_id or "")
     clean_category = _validate_category(category)
     amount = _non_negative(limit, "limit")
     with server._get_db() as db:
-        db.save_budget_limit(clean_category, amount)
+        db.save_budget_limit(clean_category, amount, user_id=scoped_user)
     return {"ok": True, "category": clean_category, "limit": round(amount, 2)}
 
 

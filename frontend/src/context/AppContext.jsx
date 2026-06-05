@@ -100,7 +100,9 @@ export const AppProvider = ({ children }) => {
     setThemePreference(pref);
     try {
       localStorage.setItem(THEME_STORAGE_KEY, pref);
-    } catch {}
+    } catch {
+      // localStorage may be unavailable in restricted browser contexts.
+    }
 
     // Optionally notify server
     try {

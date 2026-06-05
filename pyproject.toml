@@ -59,6 +59,7 @@ dev = [
 
 [project.scripts]
 spectra = "spectra.pipeline:main"
+spectra-chat-eval = "spectra.chat.evaluation:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -20,6 +20,11 @@ class ToolExecutor:
     def __init__(self, request: Request, user_id: str):
         self.request = request
         self.user_id = str(user_id or "").strip()
+        if self.user_id:
+            try:
+                self.request.state.spectra_user_id = self.user_id
+            except Exception:
+                pass
 
     async def execute(
         self,
@@ -30,60 +35,11 @@ class ToolExecutor:
         session_id: str | None = None,
     ) -> ToolExecutionResult:
         arguments = arguments or {}
+        from spectra.chat.guardrails.engine import guardrail_engine
+        guard_result = guardrail_engine.check_tool_call(tool_name, arguments, confirmation_id, self.user_id)
+        if guard_result:
+            return guard_result
         tool = get_tool(tool_name)
-        if not tool:
-            return ToolExecutionResult(
-                tool_name=tool_name,
-                status="rejected",
-                error="Tool is not registered for the chatbot.",
-            )
-        if tool.dangerous:
-            return ToolExecutionResult(
-                tool_name=tool_name,
-                status="rejected",
-                error="Admin and destructive tools are not available to the chatbot.",
-            )
-        if tool.requires_session and not self.user_id:
-            return ToolExecutionResult(
-                tool_name=tool_name,
-                status="rejected",
-                error="Authenticated session is required.",
-            )
-
-        if not tool.read_only:
-            guard = self._validate_write_confirmation(tool_name, arguments, confirmation_id)
-            if guard:
-                return guard
-        if tool_name in {
-            "plan_savings_goal",
-            "simulate_savings_adjustment",
-            "get_savings_goals",
-            "create_savings_goal",
-            "update_savings_goal",
-            "archive_savings_goal",
-            "get_budget_status",
-            "recommend_budget_plan",
-            "simulate_budget_adjustment",
-            "compare_budget_vs_actual",
-            "update_budget_limit",
-            "upsert_budget_plan",
-            "get_conversation_context",
-            "get_user_memories",
-            "remember_user_preference",
-            "forget_user_memory",
-        }:
-            guard = self._validate_no_user_id(tool_name, arguments)
-            if guard:
-                return guard
-        if tool_name in {"remember_user_preference", "forget_user_memory"}:
-            guard = self._validate_memory_arguments(tool_name, arguments)
-            if guard:
-                return guard
-        if tool_name == "get_financial_health_score":
-            guard = self._validate_financial_health_arguments(arguments)
-            if guard:
-                return guard
-
         try:
             if tool_name == "get_current_user":
                 data = self._get_current_user()
@@ -135,6 +91,20 @@ class ToolExecutor:
                 data = self._update_budget_limit(arguments)
             elif tool_name == "upsert_budget_plan":
                 data = self._upsert_budget_plan(arguments)
+            elif tool_name == "get_recurring_transactions":
+                data = self._get_recurring_transactions(arguments)
+            elif tool_name == "compare_period_spending":
+                data = self._compare_period_spending(arguments)
+            elif tool_name == "explain_budget_overrun":
+                data = self._explain_budget_overrun(arguments)
+            elif tool_name == "get_cashflow_calendar":
+                data = self._get_cashflow_calendar(arguments)
+            elif tool_name == "simulate_purchase_impact":
+                data = self._simulate_purchase_impact(arguments)
+            elif tool_name == "get_debt_summary":
+                data = self._get_debt_summary(arguments)
+            elif tool_name == "get_emergency_fund_status":
+                data = self._get_emergency_fund_status(arguments)
             elif tool_name == "get_conversation_context":
                 data = self._get_conversation_context(arguments)
             elif tool_name == "get_user_memories":
@@ -178,80 +148,7 @@ class ToolExecutor:
             )
         return ToolExecutionResult(tool_name=tool_name, status="success", data=redact_payload(data))
 
-    def _validate_write_confirmation(
-        self,
-        tool_name: str,
-        arguments: dict[str, Any],
-        confirmation_id: str | None,
-    ) -> ToolExecutionResult | None:
-        if not confirmation_id:
-            return ToolExecutionResult(
-                tool_name=tool_name,
-                status="rejected",
-                error="Write tool requires a valid pending confirmation.",
-            )
-        action = pending_actions.get(confirmation_id)
-        if not action:
-            return ToolExecutionResult(tool_name=tool_name, status="rejected", error="Unknown confirmation_id.")
-        if action.user_id != self.user_id:
-            return ToolExecutionResult(
-                tool_name=tool_name,
-                status="rejected",
-                error="Confirmation does not belong to this user.",
-            )
-        if action.status != "pending":
-            return ToolExecutionResult(
-                tool_name=tool_name,
-                status="rejected",
-                error=f"Confirmation is {action.status}.",
-            )
-        if action.tool_name != tool_name or action.tool_arguments != arguments:
-            return ToolExecutionResult(
-                tool_name=tool_name,
-                status="rejected",
-                error="Confirmation does not match this tool call.",
-            )
-        return None
 
-    def _validate_financial_health_arguments(self, arguments: dict[str, Any]) -> ToolExecutionResult | None:
-        if guard := self._validate_no_user_id("get_financial_health_score", arguments):
-            return guard
-        if bool(arguments.get("refresh") or False):
-            return ToolExecutionResult(
-                tool_name="get_financial_health_score",
-                status="rejected",
-                error="refresh is not available to chatbot tools.",
-            )
-        return None
-
-    def _validate_memory_arguments(self, tool_name: str, arguments: dict[str, Any]) -> ToolExecutionResult | None:
-        from spectra.chat.memory import LONG_TERM_MEMORY_TYPES, has_sensitive_memory_payload
-
-        if has_sensitive_memory_payload(arguments):
-            return ToolExecutionResult(
-                tool_name=tool_name,
-                status="rejected",
-                error="Memory payload contains sensitive data.",
-            )
-        if tool_name == "remember_user_preference":
-            memory_type = str(arguments.get("memory_type") or "preference")
-            if memory_type not in LONG_TERM_MEMORY_TYPES:
-                return ToolExecutionResult(
-                    tool_name=tool_name,
-                    status="rejected",
-                    error="Only stable long-term preference memory types are supported.",
-                )
-        return None
-
-    @staticmethod
-    def _validate_no_user_id(tool_name: str, arguments: dict[str, Any]) -> ToolExecutionResult | None:
-        if "user_id" in arguments:
-            return ToolExecutionResult(
-                tool_name=tool_name,
-                status="rejected",
-                error="user_id is not accepted for this tool.",
-            )
-        return None
 
     def _get_current_user(self) -> dict[str, Any]:
         from spectra.web import server
@@ -273,7 +170,12 @@ class ToolExecutor:
         scope = str(arguments.get("scope") or "cycle").strip().lower()
         if scope not in {"cycle", "90d", "ytd"}:
             scope = "cycle"
-        result = server.api_summary(self.request, scope=scope)
+        result = server.api_summary(
+            self.request,
+            scope=scope,
+            date_from=str(arguments.get("date_from") or ""),
+            date_to=str(arguments.get("date_to") or ""),
+        )
         return self._jsonable_response(result)
 
     def _get_transactions(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -327,6 +229,7 @@ class ToolExecutor:
             db._conn.commit()
             server._persist_learning(
                 db,
+                user_id=self.user_id,
                 tx_id=tx_id,
                 original_description=str(original_description or ""),
                 clean_name=str(merchant or ""),
@@ -353,7 +256,13 @@ class ToolExecutor:
         if not pattern:
             raise ValueError("pattern is required")
         with server._get_db() as db:
-            preview = server._simulate_rule_impact(db, rule_type=rule_type, pattern=pattern, sample_text=sample_text)
+            preview = server._simulate_rule_impact(
+                db,
+                rule_type=rule_type,
+                pattern=pattern,
+                sample_text=sample_text,
+                user_id=self.user_id,
+            )
         preview["examples"] = preview.get("examples", [])[:5]
         return {"ok": True, **preview}
 
@@ -368,20 +277,20 @@ class ToolExecutor:
             raise ValueError("pattern and category are required")
         self._validate_category(category)
         with server._get_db() as db:
-            rule = db.add_category_rule(rule_type=rule_type, pattern=pattern, category=category)
+            rule = db.add_category_rule(rule_type=rule_type, pattern=pattern, category=category, user_id=self.user_id)
         return {"ok": True, "rule": rule}
 
     def _get_category_rules(self) -> dict[str, Any]:
         from spectra.web import server
 
         with server._get_db() as db:
-            rules = [rule for rule in db.get_category_rules() if rule.get("is_active", True)]
+            rules = [rule for rule in db.get_category_rules(self.user_id) if rule.get("is_active", True)]
         return {"rules": rules[:50]}
 
     def _get_learning_summary(self) -> dict[str, Any]:
         from spectra.web import server
 
-        result = server.api_learning_summary()
+        result = server.api_learning_summary(self.request)
         data = self._jsonable_response(result)
         data["events"] = data.get("events", [])[:10]
         return data
@@ -561,6 +470,84 @@ class ToolExecutor:
         from spectra.budget_planner import upsert_budget_plan
 
         return upsert_budget_plan(self.user_id, budgets=list(arguments.get("budgets") or []))
+
+    def _get_recurring_transactions(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        from spectra.chat.insight_tools import get_recurring_transactions
+
+        return get_recurring_transactions(
+            self.user_id,
+            scope=str(arguments.get("scope") or "cycle"),
+            limit=self._positive_int(arguments.get("limit"), default=10, max_value=20),
+        )
+
+    def _compare_period_spending(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        from spectra.chat.insight_tools import compare_period_spending
+
+        return compare_period_spending(
+            self.user_id,
+            period_a_from=str(arguments.get("period_a_from") or ""),
+            period_a_to=str(arguments.get("period_a_to") or ""),
+            period_b_from=str(arguments.get("period_b_from") or ""),
+            period_b_to=str(arguments.get("period_b_to") or ""),
+        )
+
+    def _explain_budget_overrun(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        from spectra.chat.insight_tools import explain_budget_overrun
+        from spectra.web import server
+
+        scope = str(arguments.get("scope") or "cycle")
+        summary = self._jsonable_response(server.api_summary(self.request, scope=scope))
+        budget = self._jsonable_response(server.api_budget(self.request))
+        return explain_budget_overrun(
+            self.user_id,
+            scope=scope,
+            category=str(arguments.get("category") or ""),
+            summary_payload=summary,
+            budget_payload=budget,
+        )
+
+    def _get_cashflow_calendar(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        from spectra.chat.insight_tools import get_cashflow_calendar
+
+        days = self._positive_int(arguments.get("days"), default=30, max_value=45)
+        days = max(days, 7)
+        return get_cashflow_calendar(self.user_id, days=days, forecast_payload=self._get_balance_forecast({}))
+
+    def _simulate_purchase_impact(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        from spectra.chat.insight_tools import simulate_purchase_impact
+        from spectra.savings_goals import get_savings_goals
+        from spectra.web import server
+
+        scope = str(arguments.get("scope") or "cycle")
+        summary = self._jsonable_response(server.api_summary(self.request, scope=scope))
+        budget = self._jsonable_response(server.api_budget(self.request))
+        forecast = self._get_balance_forecast({})
+        goals = get_savings_goals(self.user_id, status="active")
+        return simulate_purchase_impact(
+            self.user_id,
+            amount=arguments.get("amount"),
+            category=str(arguments.get("category") or ""),
+            purchase_date=str(arguments.get("purchase_date") or ""),
+            scope=scope,
+            summary_payload=summary,
+            budget_payload=budget,
+            forecast_payload=forecast,
+            goals_payload=goals,
+        )
+
+    def _get_debt_summary(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        from spectra.chat.insight_tools import get_debt_summary
+
+        return get_debt_summary(self.user_id, scope=str(arguments.get("scope") or "cycle"))
+
+    def _get_emergency_fund_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        from spectra.chat.insight_tools import get_emergency_fund_status
+
+        return get_emergency_fund_status(
+            self.user_id,
+            months_target=arguments.get("months_target") or 3,
+            forecast_payload=self._get_balance_forecast({}),
+        )
 
     def _get_conversation_context(self, arguments: dict[str, Any]) -> dict[str, Any]:
         from spectra.chat.context import build_chat_context

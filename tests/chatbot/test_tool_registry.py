@@ -27,14 +27,21 @@ def test_tool_registry_contains_phase_3_tools_without_destructive_tools():
         "get_budget_status",
         "recommend_budget_plan",
         "simulate_budget_adjustment",
-            "compare_budget_vs_actual",
-            "update_budget_limit",
-            "upsert_budget_plan",
-            "get_conversation_context",
-            "get_user_memories",
-            "remember_user_preference",
-            "forget_user_memory",
-        } == set(tools)
+        "compare_budget_vs_actual",
+        "update_budget_limit",
+        "upsert_budget_plan",
+        "get_recurring_transactions",
+        "compare_period_spending",
+        "explain_budget_overrun",
+        "get_cashflow_calendar",
+        "simulate_purchase_impact",
+        "get_debt_summary",
+        "get_emergency_fund_status",
+        "get_conversation_context",
+        "get_user_memories",
+        "remember_user_preference",
+        "forget_user_memory",
+    } == set(tools)
     assert tools["update_transaction_category"].read_only is False
     assert tools["create_category_rule"].read_only is False
     assert tools["test_category_rule"].read_only is True
@@ -54,6 +61,13 @@ def test_tool_registry_contains_phase_3_tools_without_destructive_tools():
     assert tools["compare_budget_vs_actual"].read_only is True
     assert tools["update_budget_limit"].read_only is False
     assert tools["upsert_budget_plan"].read_only is False
+    assert tools["get_recurring_transactions"].read_only is True
+    assert tools["compare_period_spending"].read_only is True
+    assert tools["explain_budget_overrun"].read_only is True
+    assert tools["get_cashflow_calendar"].read_only is True
+    assert tools["simulate_purchase_impact"].read_only is True
+    assert tools["get_debt_summary"].read_only is True
+    assert tools["get_emergency_fund_status"].read_only is True
     assert not any(tool.dangerous for tool in tools.values())
     assert "reset_db" not in tools
     assert "learning_reapply" not in tools

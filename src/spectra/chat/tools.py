@@ -23,14 +23,24 @@ _TOOLS: dict[str, RegisteredTool] = {
     ),
     "get_account_summary": RegisteredTool(
         name="get_account_summary",
-        description="Return aggregate spending summary for the current cycle, last 90 days, or year to date.",
+        description="Return aggregate spending, income, category, and merchant summary for a scope or explicit date range.",
         parameters=_object_schema(
             {
                 "scope": {
                     "type": "string",
                     "enum": ["cycle", "90d", "ytd"],
-                    "description": "Summary window. Defaults to cycle.",
-                }
+                    "description": "Summary window. Defaults to cycle when date_from/date_to are not provided.",
+                },
+                "date_from": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Optional inclusive ISO date, for example 2026-05-01. Use with date_to.",
+                },
+                "date_to": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Optional exclusive ISO date, for example 2026-06-01 for May 2026. Use with date_from.",
+                },
             }
         ),
         required_scope="analytics.read",
@@ -309,6 +319,73 @@ _TOOLS: dict[str, RegisteredTool] = {
         ),
         required_scope="budget.write",
         read_only=False,
+    ),
+    "get_recurring_transactions": RegisteredTool(
+        name="get_recurring_transactions",
+        description="Return estimated recurring payments, subscriptions, recurring income, and price changes.",
+        parameters=_object_schema(
+            {
+                "scope": {"type": "string", "enum": ["cycle", "90d", "ytd"], "default": "cycle"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 10},
+            }
+        ),
+        required_scope="analytics.read",
+    ),
+    "compare_period_spending": RegisteredTool(
+        name="compare_period_spending",
+        description="Compare spending, income, categories, and merchants between two explicit periods or current versus previous month.",
+        parameters=_object_schema(
+            {
+                "period_a_from": {"type": "string", "default": ""},
+                "period_a_to": {"type": "string", "default": ""},
+                "period_b_from": {"type": "string", "default": ""},
+                "period_b_to": {"type": "string", "default": ""},
+            }
+        ),
+        required_scope="analytics.read",
+    ),
+    "explain_budget_overrun": RegisteredTool(
+        name="explain_budget_overrun",
+        description="Explain which categories and transactions are driving current over-budget or at-risk budget status.",
+        parameters=_object_schema(
+            {
+                "scope": {"type": "string", "enum": ["cycle", "90d", "ytd"], "default": "cycle"},
+                "category": {"type": "string", "default": ""},
+            }
+        ),
+        required_scope="budget.read",
+    ),
+    "get_cashflow_calendar": RegisteredTool(
+        name="get_cashflow_calendar",
+        description="Return an estimated daily cashflow calendar from current balance, daily spend, and recurring events.",
+        parameters=_object_schema({"days": {"type": "integer", "minimum": 7, "maximum": 45, "default": 30}}),
+        required_scope="forecast.read",
+    ),
+    "simulate_purchase_impact": RegisteredTool(
+        name="simulate_purchase_impact",
+        description="Simulate whether a planned purchase affects current budget, forecast balance, or savings goals.",
+        parameters=_object_schema(
+            {
+                "amount": {"type": "number"},
+                "category": {"type": "string", "default": ""},
+                "purchase_date": {"type": "string", "default": ""},
+                "scope": {"type": "string", "enum": ["cycle", "90d", "ytd"], "default": "cycle"},
+            },
+            required=["amount"],
+        ),
+        required_scope="forecast.read",
+    ),
+    "get_debt_summary": RegisteredTool(
+        name="get_debt_summary",
+        description="Infer debt-like payments from transaction history without claiming outstanding debt balance.",
+        parameters=_object_schema({"scope": {"type": "string", "enum": ["cycle", "90d", "ytd"], "default": "cycle"}}),
+        required_scope="analytics.read",
+    ),
+    "get_emergency_fund_status": RegisteredTool(
+        name="get_emergency_fund_status",
+        description="Estimate emergency fund coverage from current balance and essential historical expenses.",
+        parameters=_object_schema({"months_target": {"type": "number", "default": 3}}),
+        required_scope="forecast.read",
     ),
     "get_conversation_context": RegisteredTool(
         name="get_conversation_context",
