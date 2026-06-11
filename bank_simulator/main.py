@@ -147,12 +147,61 @@ class PredictionResponse(BaseModel):
 
 class UserInfo(BaseModel):
     user_id: str
+    account_id: str
     persona_type: str
     account_number: str
     bank_name: str
     current_balance: float
+    account_type: str = "checking"
+    currency: str = "VND"
     transaction_count: int
     anomaly_count: int
+
+
+class AccountInfo(BaseModel):
+    id: str
+    user_id: str
+    persona_type: str
+    account_number: str
+    bank_name: str
+    balance: float
+    account_type: str
+    currency: str
+    transaction_count: int
+    anomaly_count: int
+
+
+class TransactionCreate(BaseModel):
+    account_id: str
+    transaction_type: str = Field(..., pattern="^(debit|credit)$")
+    amount: float = Field(..., gt=0)
+    merchant: str = Field(..., min_length=1, max_length=255)
+    merchant_category: str = Field(..., min_length=1, max_length=100)
+    category: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = None
+    is_anomaly: bool = False
+    anomaly_reason: Optional[str] = None
+    location: Optional[str] = None
+    payment_method: Optional[str] = Field(None, max_length=50)
+    reference_number: Optional[str] = Field(None, max_length=100)
+    created_at: Optional[datetime] = None
+
+
+class AccountBalanceUpdate(BaseModel):
+    balance: float = Field(..., ge=0)
+
+
+class TransactionMutationResponse(BaseModel):
+    ok: bool
+    transaction: Transaction
+    previous_balance: float
+    current_balance: float
+
+
+class AccountBalanceResponse(BaseModel):
+    ok: bool
+    account: AccountInfo
+    previous_balance: float
 
 
 class OverallStats(BaseModel):
@@ -374,18 +423,21 @@ def get_user_info(user_id: str) -> dict[str, Any] | None:
         cursor.execute(
             """
             SELECT
+                ba.id AS account_id,
                 ba.user_id,
                 COALESCE(up.persona_type, 'Unknown') AS persona_type,
                 ba.account_number,
                 ba.bank_name,
                 ba.balance,
+                ba.account_type,
+                ba.currency,
                 COUNT(bt.id) as transaction_count,
                 COUNT(CASE WHEN bt.is_anomaly THEN 1 END) as anomaly_count
             FROM bank_accounts ba
             LEFT JOIN user_personas up ON ba.user_id = up.user_id
-            LEFT JOIN bank_transactions bt ON ba.user_id = bt.user_id
+            LEFT JOIN bank_transactions bt ON ba.id = bt.account_id
             WHERE ba.user_id = %s
-            GROUP BY ba.user_id, up.persona_type, ba.account_number, ba.bank_name, ba.balance
+            GROUP BY ba.id, ba.user_id, up.persona_type, ba.account_number, ba.bank_name, ba.balance, ba.account_type, ba.currency
             LIMIT 1
             """,
             (user_id,),
@@ -395,11 +447,14 @@ def get_user_info(user_id: str) -> dict[str, Any] | None:
             return None
         data = row_to_dict(cursor, row)
         return {
+            "account_id": str(data["account_id"]),
             "user_id": str(data["user_id"]),
             "persona_type": data["persona_type"],
             "account_number": data["account_number"],
             "bank_name": data["bank_name"],
             "current_balance": float(data["balance"]),
+            "account_type": data["account_type"],
+            "currency": data["currency"],
             "transaction_count": int(data["transaction_count"]),
             "anomaly_count": int(data["anomaly_count"]),
         }
@@ -496,17 +551,20 @@ def get_demo_users(limit: int = 100) -> list[dict[str, Any]]:
         cursor.execute(
             """
             SELECT
+                ba.id AS account_id,
                 ba.user_id,
                 COALESCE(up.persona_type, 'Unknown') AS persona_type,
                 ba.account_number,
                 ba.bank_name,
                 ba.balance,
+                ba.account_type,
+                ba.currency,
                 COUNT(bt.id) as transaction_count,
                 COUNT(CASE WHEN bt.is_anomaly THEN 1 END) as anomaly_count
             FROM bank_accounts ba
             LEFT JOIN user_personas up ON ba.user_id = up.user_id
-            LEFT JOIN bank_transactions bt ON ba.user_id = bt.user_id
-            GROUP BY ba.user_id, up.persona_type, ba.account_number, ba.bank_name, ba.balance
+            LEFT JOIN bank_transactions bt ON ba.id = bt.account_id
+            GROUP BY ba.id, ba.user_id, up.persona_type, ba.account_number, ba.bank_name, ba.balance, ba.account_type, ba.currency
             ORDER BY ba.balance DESC
             LIMIT %s
             """,
@@ -518,11 +576,14 @@ def get_demo_users(limit: int = 100) -> list[dict[str, Any]]:
             data = row_to_dict(cursor, row)
             users.append(
                 {
+                    "account_id": str(data["account_id"]),
                     "user_id": str(data["user_id"]),
                     "persona_type": data["persona_type"] or "Unknown",
                     "account_number": data["account_number"],
                     "bank_name": data["bank_name"],
                     "current_balance": float(data["balance"]),
+                    "account_type": data["account_type"],
+                    "currency": data["currency"],
                     "transaction_count": int(data["transaction_count"]),
                     "anomaly_count": int(data["anomaly_count"]),
                 }
@@ -531,6 +592,54 @@ def get_demo_users(limit: int = 100) -> list[dict[str, Any]]:
     finally:
         cursor.close()
         conn.close()
+
+
+def make_reference_number() -> str:
+    return f"FAKE-{uuid.uuid4().hex[:18].upper()}"
+
+
+def account_row_to_info(data: dict[str, Any]) -> AccountInfo:
+    return AccountInfo(
+        id=str(data["id"]),
+        user_id=str(data["user_id"]),
+        persona_type=data.get("persona_type") or "Unknown",
+        account_number=str(data["account_number"]),
+        bank_name=str(data["bank_name"]),
+        balance=float(data["balance"] or 0),
+        account_type=str(data.get("account_type") or "checking"),
+        currency=str(data.get("currency") or "VND"),
+        transaction_count=int(data.get("transaction_count") or 0),
+        anomaly_count=int(data.get("anomaly_count") or 0),
+    )
+
+
+def fetch_account_info(cursor, account_id: str) -> AccountInfo | None:
+    cursor.execute(
+        """
+        SELECT
+            ba.id,
+            ba.user_id,
+            COALESCE(up.persona_type, 'Unknown') AS persona_type,
+            ba.account_number,
+            ba.bank_name,
+            ba.balance,
+            ba.account_type,
+            ba.currency,
+            COUNT(bt.id) AS transaction_count,
+            COUNT(CASE WHEN bt.is_anomaly THEN 1 END) AS anomaly_count
+        FROM bank_accounts ba
+        LEFT JOIN user_personas up ON ba.user_id = up.user_id
+        LEFT JOIN bank_transactions bt ON ba.id = bt.account_id
+        WHERE ba.id = %s
+        GROUP BY ba.id, ba.user_id, up.persona_type, ba.account_number, ba.bank_name, ba.balance, ba.account_type, ba.currency
+        LIMIT 1
+        """,
+        (account_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return account_row_to_info(row_to_dict(cursor, row))
 
 
 # ============================================================================
@@ -555,7 +664,10 @@ async def health():
         "endpoints": [
             "/login",
             "/dashboard",
+            "/accounts",
             "/transactions",
+            "POST /transactions",
+            "PATCH /accounts/{account_id}/balance",
             "/summary",
             "/anomalies",
             "/prediction",
@@ -796,38 +908,51 @@ async def dashboard_page(request: Request):
         <title>Bank Simulator Dashboard</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <style>
-          :root { color-scheme: light; }
+          :root { color-scheme: light; --bg: #f4f7fb; --panel: #fff; --border: #d9e2ec; --text: #17202a; --muted: #52606d; --accent: #1864ab; --green: #137333; --red: #b42318; }
           * { box-sizing: border-box; }
-          body { margin: 0; font-family: Inter, system-ui, sans-serif; background: #f6f8fb; color: #17202a; }
-          header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 28px; background: #fff; border-bottom: 1px solid #d9e2ec; position: sticky; top: 0; z-index: 2; }
+          body { margin: 0; font-family: Inter, system-ui, sans-serif; background: var(--bg); color: var(--text); }
+          header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 28px; background: #fff; border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 2; }
           h1, h2, h3, p { margin-top: 0; }
           h1 { font-size: 22px; margin-bottom: 4px; }
-          h2 { font-size: 16px; margin-bottom: 14px; }
+          h2 { font-size: 18px; margin-bottom: 8px; }
           main { width: min(1180px, calc(100% - 32px)); margin: 24px auto 40px; display: grid; gap: 18px; }
-          .muted { color: #52606d; }
+          label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 700; }
+          input, select, textarea { width: 100%; min-height: 40px; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: #fff; color: var(--text); font: inherit; }
+          textarea { min-height: 76px; resize: vertical; }
+          button, a.button { min-height: 38px; padding: 8px 13px; border-radius: 6px; border: 1px solid #bcccdc; background: #fff; color: var(--text); font: inherit; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+          button:disabled { cursor: not-allowed; opacity: .65; }
+          .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+          .muted { color: var(--muted); }
+          .actions, .tabs, .form-actions, .inline-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+          .tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+          .tab-panel { display: none; }
+          .tab-panel.active { display: grid; gap: 18px; }
           .grid { display: grid; gap: 16px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-          .two-col { display: grid; gap: 16px; grid-template-columns: 1.2fr .8fr; }
-          .card { background: #fff; border: 1px solid #d9e2ec; border-radius: 8px; padding: 18px; box-shadow: 0 10px 28px rgba(15, 23, 42, .05); }
+          .two-col { display: grid; gap: 16px; grid-template-columns: minmax(280px, .8fr) minmax(0, 1.2fr); align-items: start; }
+          .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 18px; box-shadow: 0 10px 28px rgba(15, 23, 42, .05); }
           .metric { display: grid; gap: 5px; }
-          .metric span { color: #52606d; font-size: 13px; }
-          .metric strong { font-size: 22px; }
-          button, a.button { min-height: 38px; padding: 8px 13px; border-radius: 6px; border: 1px solid #bcccdc; background: #fff; color: #17202a; font: inherit; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
-          .primary { background: #1864ab; border-color: #1864ab; color: #fff; }
-          .actions { display: flex; gap: 10px; align-items: center; }
+          .metric span { color: var(--muted); font-size: 13px; }
+          .metric strong, .account-balance { font-size: 22px; }
+          .form-grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          .wide { grid-column: 1 / -1; }
+          .check-row { display: flex; align-items: center; gap: 8px; min-height: 40px; padding-top: 20px; color: var(--muted); font-size: 12px; font-weight: 700; }
+          .check-row input { width: auto; min-height: auto; }
           table { width: 100%; border-collapse: collapse; }
           th, td { padding: 10px 8px; border-bottom: 1px solid #edf2f7; text-align: left; font-size: 14px; vertical-align: top; }
-          th { color: #52606d; font-weight: 700; }
+          th { color: var(--muted); font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
           .pill { display: inline-flex; align-items: center; min-height: 24px; padding: 2px 8px; border-radius: 999px; background: #edf2f7; color: #334e68; font-size: 12px; }
-          .danger { background: #fff1f0; color: #b42318; }
-          .positive { color: #137333; }
-          .negative { color: #b42318; }
+          .danger { background: #fff1f0; color: var(--red); }
+          .positive { color: var(--green); font-weight: 700; }
+          .negative { color: var(--red); font-weight: 700; }
           .bars { display: grid; gap: 10px; }
           .bar-row { display: grid; gap: 6px; }
           .bar-label { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
           .bar { height: 8px; background: #edf2f7; border-radius: 999px; overflow: hidden; }
-          .bar > div { height: 100%; background: #1864ab; }
-          .error { background: #fff1f0; color: #b42318; border: 1px solid #ffccc7; padding: 12px; border-radius: 6px; display: none; }
-          @media (max-width: 900px) { .grid, .two-col { grid-template-columns: 1fr; } header { align-items: flex-start; flex-direction: column; } .actions { width: 100%; } .actions > * { flex: 1; } }
+          .bar > div { height: 100%; background: var(--accent); }
+          .account-summary { display: grid; gap: 8px; padding: 13px; border: 1px solid var(--border); border-radius: 8px; background: #f8fafc; }
+          .error { background: #fff1f0; color: var(--red); border: 1px solid #ffccc7; padding: 12px; border-radius: 6px; display: none; }
+          .success { background: #ecfdf3; color: #067647; border: 1px solid #abefc6; padding: 12px; border-radius: 6px; display: none; }
+          @media (max-width: 900px) { .grid, .two-col, .form-grid { grid-template-columns: 1fr; } .wide { grid-column: auto; } header { align-items: flex-start; flex-direction: column; } .actions, .tabs { width: 100%; } .actions > *, .tabs > * { flex: 1; } }
         </style>
       </head>
       <body>
@@ -837,6 +962,9 @@ async def dashboard_page(request: Request):
             <div class="muted" id="profile-line">Loading profile...</div>
           </div>
           <div class="actions">
+            <button class="tab-button active" data-tab="overview">Tong quan</button>
+            <button class="tab-button" data-tab="accounts">Tai khoan</button>
+            <button class="tab-button" data-tab="transactions-panel">Giao dich</button>
             <a class="button" href="/docs">API Docs</a>
             <button id="logout">Logout</button>
           </div>
@@ -844,40 +972,142 @@ async def dashboard_page(request: Request):
 
         <main>
           <div class="error" id="error"></div>
+          <div class="success" id="success"></div>
 
-          <section class="grid">
-            <div class="card metric"><span>Current balance</span><strong id="balance">-</strong></div>
-            <div class="card metric"><span>90d spending</span><strong id="spending">-</strong></div>
-            <div class="card metric"><span>90d income</span><strong id="income">-</strong></div>
-            <div class="card metric"><span>Anomalies</span><strong id="anomaly-count">-</strong></div>
+          <section id="overview" class="tab-panel active">
+            <section class="grid">
+              <div class="card metric"><span>Current balance</span><strong id="balance">-</strong></div>
+              <div class="card metric"><span>90d spending</span><strong id="spending">-</strong></div>
+              <div class="card metric"><span>90d income</span><strong id="income">-</strong></div>
+              <div class="card metric"><span>Anomalies</span><strong id="anomaly-count">-</strong></div>
+            </section>
+
+            <section class="two-col">
+              <div class="card">
+                <h2>Spending by category</h2>
+                <div class="bars" id="categories"></div>
+              </div>
+              <div class="card">
+                <h2>Balance prediction</h2>
+                <p><strong id="predicted-balance">-</strong></p>
+                <p class="muted" id="prediction-detail">-</p>
+                <p id="recommendation">-</p>
+              </div>
+            </section>
+
+            <section class="two-col">
+              <div class="card">
+                <h2>Recent transactions</h2>
+                <table>
+                  <thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th>Amount</th></tr></thead>
+                  <tbody id="transactions"></tbody>
+                </table>
+              </div>
+              <div class="card">
+                <h2>Anomalies</h2>
+                <table>
+                  <thead><tr><th>Merchant</th><th>Severity</th><th>Amount</th></tr></thead>
+                  <tbody id="anomalies"></tbody>
+                </table>
+              </div>
+            </section>
           </section>
 
-          <section class="two-col">
-            <div class="card">
-              <h2>Spending by category</h2>
-              <div class="bars" id="categories"></div>
-            </div>
-            <div class="card">
-              <h2>Balance prediction</h2>
-              <p><strong id="predicted-balance">-</strong></p>
-              <p class="muted" id="prediction-detail">-</p>
-              <p id="recommendation">-</p>
+          <section id="accounts" class="tab-panel">
+            <div class="two-col">
+              <div class="card">
+                <h2>Tai khoan</h2>
+                <p class="muted">Chon tai khoan bank va cap nhat so du hien tai.</p>
+                <label>Tai khoan
+                  <select id="account-select"></select>
+                </label>
+                <div class="account-summary" style="margin: 12px 0;">
+                  <span class="muted" id="account-persona">-</span>
+                  <strong class="account-balance" id="account-balance">-</strong>
+                  <small class="muted" id="account-meta">-</small>
+                </div>
+                <label>So du moi
+                  <input id="balance-input" type="number" min="0" step="0.01" />
+                </label>
+                <div class="form-actions" style="margin-top: 12px;">
+                  <button id="save-balance" class="primary" type="button">Luu so du</button>
+                  <button id="reload-accounts" type="button">Lam moi</button>
+                </div>
+              </div>
+              <div class="card">
+                <h2>Danh sach tai khoan</h2>
+                <table>
+                  <thead><tr><th>Bank</th><th>Account</th><th>Balance</th><th>Transactions</th></tr></thead>
+                  <tbody id="accounts-table"></tbody>
+                </table>
+              </div>
             </div>
           </section>
 
-          <section class="two-col">
+          <section id="transactions-panel" class="tab-panel">
             <div class="card">
-              <h2>Recent transactions</h2>
-              <table>
-                <thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th>Amount</th></tr></thead>
-                <tbody id="transactions"></tbody>
-              </table>
+              <h2>Tao giao dich fake</h2>
+              <p class="muted">Neu chon credit, so tien se duoc cong vao so du hien tai. Neu chon debit, so tien se bi tru.</p>
+              <form id="transaction-form" class="form-grid">
+                <label>Loai giao dich
+                  <select id="tx-type" required>
+                    <option value="debit">Debit - tru tien</option>
+                    <option value="credit">Credit - cong tien</option>
+                  </select>
+                </label>
+                <label>So tien
+                  <input id="tx-amount" type="number" min="0.01" step="0.01" required />
+                </label>
+                <label>Merchant
+                  <input id="tx-merchant" required />
+                </label>
+                <label>Merchant category
+                  <input id="tx-merchant-category" required />
+                </label>
+                <label>Category
+                  <input id="tx-category" required />
+                </label>
+                <label>Payment method
+                  <select id="tx-payment-method">
+                    <option value="card">card</option>
+                    <option value="transfer">transfer</option>
+                    <option value="cash">cash</option>
+                    <option value="online">online</option>
+                  </select>
+                </label>
+                <label>Reference number
+                  <input id="tx-reference" placeholder="Auto neu de trong" />
+                </label>
+                <label>Thoi gian
+                  <input id="tx-created-at" type="datetime-local" />
+                </label>
+                <label class="wide">Mo ta
+                  <textarea id="tx-description"></textarea>
+                </label>
+                <label>Location
+                  <input id="tx-location" />
+                </label>
+                <label class="check-row">
+                  <input id="tx-is-anomaly" type="checkbox" />
+                  Danh dau anomaly
+                </label>
+                <label class="wide">Anomaly reason
+                  <input id="tx-anomaly-reason" />
+                </label>
+                <div class="form-actions wide" style="justify-content: flex-end;">
+                  <button class="primary" type="submit">Them giao dich</button>
+                </div>
+              </form>
             </div>
+
             <div class="card">
-              <h2>Anomalies</h2>
+              <div class="inline-actions" style="justify-content: space-between; margin-bottom: 12px;">
+                <h2 style="margin: 0;">Bank transactions</h2>
+                <button id="reload-transactions" type="button">Lam moi</button>
+              </div>
               <table>
-                <thead><tr><th>Merchant</th><th>Severity</th><th>Amount</th></tr></thead>
-                <tbody id="anomalies"></tbody>
+                <thead><tr><th>Time</th><th>Merchant</th><th>Type</th><th>Category</th><th>Amount</th><th>Balance after</th><th>Reference</th></tr></thead>
+                <tbody id="bank-transactions"></tbody>
               </table>
             </div>
           </section>
@@ -886,7 +1116,10 @@ async def dashboard_page(request: Request):
         <script>
           const money = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', maximumFractionDigits: 0 });
           const dateFmt = new Intl.DateTimeFormat('vi-VN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+          const dateTimeFmt = new Intl.DateTimeFormat('vi-VN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
           const $ = (id) => document.getElementById(id);
+          let accounts = [];
+          let selectedAccountId = '';
           const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
             '&': '&amp;',
             '<': '&lt;',
@@ -906,6 +1139,77 @@ async def dashboard_page(request: Request):
               throw new Error(data.error || data.detail || `Request failed: ${res.status}`);
             }
             return res.json();
+          }
+
+          function showMessage(message, type = 'success') {
+            const target = type === 'error' ? $('error') : $('success');
+            const other = type === 'error' ? $('success') : $('error');
+            other.style.display = 'none';
+            target.textContent = message;
+            target.style.display = 'block';
+            setTimeout(() => { target.style.display = 'none'; }, 3500);
+          }
+
+          function localDateTimeValue(date = new Date()) {
+            const copy = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+            return copy.toISOString().slice(0, 16);
+          }
+
+          function activeAccount() {
+            return accounts.find((account) => account.id === selectedAccountId) || accounts[0] || null;
+          }
+
+          function renderAccounts() {
+            const select = $('account-select');
+            select.innerHTML = accounts.map((account) => `
+              <option value="${escapeHtml(account.id)}">${escapeHtml(account.bank_name)} - ${escapeHtml(account.account_number)}</option>
+            `).join('');
+            if (selectedAccountId) select.value = selectedAccountId;
+
+            const account = activeAccount();
+            if (!account) return;
+            selectedAccountId = account.id;
+            $('account-persona').textContent = `${account.persona_type} - ${account.bank_name}`;
+            $('account-balance').textContent = money.format(account.balance);
+            $('account-meta').textContent = `${account.transaction_count} transactions - ${account.account_type} - ${account.currency}`;
+            $('balance-input').value = account.balance;
+            $('accounts-table').innerHTML = accounts.map((item) => `
+              <tr>
+                <td>${escapeHtml(item.bank_name)}</td>
+                <td>${escapeHtml(item.account_number)}</td>
+                <td>${money.format(item.balance)}</td>
+                <td>${item.transaction_count}</td>
+              </tr>
+            `).join('');
+          }
+
+          async function loadAccounts() {
+            accounts = await api('/accounts');
+            if (!selectedAccountId && accounts.length) selectedAccountId = accounts[0].id;
+            renderAccounts();
+          }
+
+          function renderBankTransactions(rows) {
+            if (!rows.length) {
+              $('bank-transactions').innerHTML = '<tr><td colspan="7" class="muted">No bank transactions found.</td></tr>';
+              return;
+            }
+            $('bank-transactions').innerHTML = rows.map((tx) => `
+              <tr>
+                <td>${dateTimeFmt.format(new Date(tx.created_at))}</td>
+                <td><strong>${escapeHtml(tx.merchant)}</strong><br><span class="muted">${escapeHtml(tx.payment_method || '')}</span></td>
+                <td><span class="pill">${escapeHtml(tx.transaction_type)}</span></td>
+                <td>${escapeHtml(tx.category)}</td>
+                <td class="${tx.transaction_type === 'credit' ? 'positive' : 'negative'}">${tx.transaction_type === 'credit' ? '+' : '-'}${money.format(tx.amount)}</td>
+                <td>${money.format(tx.balance_after)}</td>
+                <td>${escapeHtml(tx.reference_number || '')}</td>
+              </tr>
+            `).join('');
+          }
+
+          async function loadBankTransactions() {
+            const qs = selectedAccountId ? `?limit=25&account_id=${encodeURIComponent(selectedAccountId)}` : '?limit=25';
+            renderBankTransactions(await api(`/transactions${qs}`));
           }
 
           function renderCategories(categories) {
@@ -968,17 +1272,97 @@ async def dashboard_page(request: Request):
               renderCategories(summary.categories || []);
               renderTransactions(transactions || []);
               renderAnomalies(anomalies || []);
+              await loadAccounts();
+              await loadBankTransactions();
             } catch (err) {
-              $('error').style.display = 'block';
-              $('error').textContent = err.message || 'Could not load dashboard';
+              showMessage(err.message || 'Could not load dashboard', 'error');
             }
           }
+
+          function switchTab(tabId) {
+            document.querySelectorAll('.tab-button').forEach((button) => {
+              button.classList.toggle('active', button.dataset.tab === tabId);
+            });
+            document.querySelectorAll('.tab-panel').forEach((panel) => {
+              panel.classList.toggle('active', panel.id === tabId);
+            });
+          }
+
+          document.querySelectorAll('.tab-button').forEach((button) => {
+            button.addEventListener('click', () => switchTab(button.dataset.tab));
+          });
+
+          $('account-select').addEventListener('change', async (event) => {
+            selectedAccountId = event.target.value;
+            renderAccounts();
+            await loadBankTransactions();
+          });
+
+          $('reload-accounts').addEventListener('click', loadAccounts);
+          $('reload-transactions').addEventListener('click', loadBankTransactions);
+
+          $('save-balance').addEventListener('click', async () => {
+            const account = activeAccount();
+            if (!account) return;
+            try {
+              const result = await api(`/accounts/${encodeURIComponent(account.id)}/balance`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ balance: Number($('balance-input').value) }),
+              });
+              accounts = accounts.map((item) => item.id === result.account.id ? result.account : item);
+              renderAccounts();
+              $('balance').textContent = money.format(result.account.balance);
+              showMessage('Da cap nhat so du tai khoan.');
+            } catch (err) {
+              showMessage(err.message || 'Cap nhat so du that bai', 'error');
+            }
+          });
+
+          $('transaction-form').addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const account = activeAccount();
+            if (!account) return;
+            try {
+              const result = await api('/transactions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  account_id: account.id,
+                  transaction_type: $('tx-type').value,
+                  amount: Number($('tx-amount').value),
+                  merchant: $('tx-merchant').value,
+                  merchant_category: $('tx-merchant-category').value,
+                  category: $('tx-category').value,
+                  description: $('tx-description').value,
+                  is_anomaly: $('tx-is-anomaly').checked,
+                  anomaly_reason: $('tx-anomaly-reason').value,
+                  location: $('tx-location').value,
+                  payment_method: $('tx-payment-method').value,
+                  reference_number: $('tx-reference').value || undefined,
+                  created_at: $('tx-created-at').value || undefined,
+                }),
+              });
+              accounts = accounts.map((item) => item.id === account.id ? { ...item, balance: result.current_balance, transaction_count: item.transaction_count + 1 } : item);
+              renderAccounts();
+              $('balance').textContent = money.format(result.current_balance);
+              $('transaction-form').reset();
+              $('tx-type').value = 'debit';
+              $('tx-payment-method').value = 'card';
+              $('tx-created-at').value = localDateTimeValue();
+              await loadBankTransactions();
+              showMessage(`Da them giao dich. So du moi: ${money.format(result.current_balance)}.`);
+            } catch (err) {
+              showMessage(err.message || 'Them giao dich that bai', 'error');
+            }
+          });
 
           $('logout').addEventListener('click', async () => {
             await fetch('/logout', { method: 'POST' });
             window.location.href = '/login';
           });
 
+          $('tx-created-at').value = localDateTimeValue();
           loadDashboard();
         </script>
       </body>
@@ -986,10 +1370,51 @@ async def dashboard_page(request: Request):
     """
 
 
+@app.get("/accounts", response_model=List[AccountInfo])
+async def get_accounts(
+    request: Request,
+    user_id: Optional[str] = Query(None, description="UUID cua user")
+):
+    """Return bank accounts for the authenticated bank user."""
+    user_id = require_bank_user(request, user_id)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT
+                ba.id,
+                ba.user_id,
+                COALESCE(up.persona_type, 'Unknown') AS persona_type,
+                ba.account_number,
+                ba.bank_name,
+                ba.balance,
+                ba.account_type,
+                ba.currency,
+                COUNT(bt.id) AS transaction_count,
+                COUNT(CASE WHEN bt.is_anomaly THEN 1 END) AS anomaly_count
+            FROM bank_accounts ba
+            LEFT JOIN user_personas up ON ba.user_id = up.user_id
+            LEFT JOIN bank_transactions bt ON ba.id = bt.account_id
+            WHERE ba.user_id = %s
+            GROUP BY ba.id, ba.user_id, up.persona_type, ba.account_number, ba.bank_name, ba.balance, ba.account_type, ba.currency
+            ORDER BY ba.created_at ASC
+            """,
+            (user_id,),
+        )
+        return [account_row_to_info(row_to_dict(cursor, row)) for row in cursor.fetchall()]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @app.get("/transactions", response_model=List[Transaction])
 async def get_transactions(
     request: Request,
     user_id: Optional[str] = Query(None, description="UUID của user"),
+    account_id: Optional[str] = Query(None, description="UUID cua account"),
     limit: int = Query(100, ge=1, le=1000, description="Số lượng transactions tối đa"),
     offset: int = Query(0, ge=0, description="Offset cho pagination"),
     category: Optional[str] = Query(None, description="Filter theo category"),
@@ -1022,6 +1447,10 @@ async def get_transactions(
             WHERE user_id = %s
         """
         params = [user_id]
+
+        if account_id:
+            query += " AND account_id = %s"
+            params.append(account_id)
         
         if category:
             query += " AND category = %s"
@@ -1053,6 +1482,164 @@ async def get_transactions(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@app.post("/transactions", response_model=TransactionMutationResponse, status_code=201)
+async def create_transaction(request: Request, payload: TransactionCreate):
+    """Create a fake bank transaction and set account balance to the computed balance_after."""
+    session_user_id = require_bank_user(request)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT id, user_id, balance
+            FROM bank_accounts
+            WHERE id = %s
+            FOR UPDATE
+            """,
+            (payload.account_id,),
+        )
+        account = cursor.fetchone()
+        if not account:
+            raise HTTPException(status_code=404, detail="Account not found")
+
+        account_id, account_user_id, current_balance_raw = account
+        account_user_id = str(account_user_id)
+        if account_user_id != session_user_id:
+            raise HTTPException(status_code=403, detail="Cannot mutate another user's account")
+
+        amount = Decimal(str(payload.amount))
+        previous_balance = Decimal(str(current_balance_raw))
+        if payload.transaction_type == "debit" and previous_balance < amount:
+            raise HTTPException(status_code=400, detail="Insufficient balance for debit transaction")
+
+        balance_after = previous_balance + amount if payload.transaction_type == "credit" else previous_balance - amount
+        reference_number = str(payload.reference_number or "").strip() or make_reference_number()
+        created_at = payload.created_at or datetime.now()
+
+        cursor.execute(
+            """
+            INSERT INTO bank_transactions (
+                user_id, account_id, transaction_type, amount, merchant,
+                merchant_category, category, description, balance_after,
+                is_anomaly, anomaly_reason, location, payment_method,
+                reference_number, created_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING
+                id, user_id, account_id, transaction_type, amount, merchant,
+                merchant_category, category, description, balance_after,
+                is_anomaly, anomaly_reason, location, payment_method,
+                reference_number, created_at
+            """,
+            (
+                account_user_id,
+                str(account_id),
+                payload.transaction_type,
+                amount,
+                payload.merchant.strip(),
+                payload.merchant_category.strip(),
+                payload.category.strip(),
+                payload.description,
+                balance_after,
+                payload.is_anomaly,
+                payload.anomaly_reason,
+                payload.location,
+                payload.payment_method,
+                reference_number,
+                created_at,
+            ),
+        )
+        tx = Transaction(**row_to_dict(cursor, cursor.fetchone()))
+
+        cursor.execute(
+            """
+            UPDATE bank_accounts
+            SET balance = %s, updated_at = NOW()
+            WHERE id = %s
+            """,
+            (balance_after, str(account_id)),
+        )
+        cursor.execute("SELECT balance FROM bank_accounts WHERE id = %s", (str(account_id),))
+        current_balance = float(cursor.fetchone()[0] or 0)
+        conn.commit()
+
+        return TransactionMutationResponse(
+            ok=True,
+            transaction=tx,
+            previous_balance=float(previous_balance),
+            current_balance=current_balance,
+        )
+    except HTTPException:
+        conn.rollback()
+        raise
+    except psycopg2.IntegrityError as e:
+        conn.rollback()
+        raise HTTPException(status_code=400, detail=f"Invalid transaction data: {str(e)}")
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.patch("/accounts/{account_id}/balance", response_model=AccountBalanceResponse)
+async def update_account_balance(
+    account_id: str,
+    request: Request,
+    payload: AccountBalanceUpdate,
+):
+    """Set the current account balance directly for simulator scenarios."""
+    session_user_id = require_bank_user(request)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT user_id, balance
+            FROM bank_accounts
+            WHERE id = %s
+            FOR UPDATE
+            """,
+            (account_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Account not found")
+
+        account_user_id, previous_balance = row
+        if str(account_user_id) != session_user_id:
+            raise HTTPException(status_code=403, detail="Cannot mutate another user's account")
+
+        cursor.execute(
+            """
+            UPDATE bank_accounts
+            SET balance = %s, updated_at = NOW()
+            WHERE id = %s
+            """,
+            (Decimal(str(payload.balance)), account_id),
+        )
+        account = fetch_account_info(cursor, account_id)
+        conn.commit()
+        if not account:
+            raise HTTPException(status_code=404, detail="Account not found")
+
+        return AccountBalanceResponse(
+            ok=True,
+            account=account,
+            previous_balance=float(previous_balance or 0),
+        )
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
 
 
 @app.get("/summary", response_model=SpendingSummary)
@@ -1321,16 +1908,19 @@ async def get_all_users(
         
         query = """
             SELECT 
+                ba.id AS account_id,
                 ba.user_id,
                 up.persona_type,
                 ba.account_number,
                 ba.bank_name,
                 ba.balance,
+                ba.account_type,
+                ba.currency,
                 COUNT(bt.id) as transaction_count,
                 COUNT(CASE WHEN bt.is_anomaly THEN 1 END) as anomaly_count
             FROM bank_accounts ba
             LEFT JOIN user_personas up ON ba.user_id = up.user_id
-            LEFT JOIN bank_transactions bt ON ba.user_id = bt.user_id
+            LEFT JOIN bank_transactions bt ON ba.id = bt.account_id
         """
         
         params = []
@@ -1339,7 +1929,7 @@ async def get_all_users(
             params.append(persona_type)
         
         query += """
-            GROUP BY ba.user_id, up.persona_type, ba.account_number, ba.bank_name, ba.balance
+            GROUP BY ba.id, ba.user_id, up.persona_type, ba.account_number, ba.bank_name, ba.balance, ba.account_type, ba.currency
             ORDER BY ba.balance DESC
             LIMIT %s
         """
@@ -1352,11 +1942,14 @@ async def get_all_users(
         for row in rows:
             user_dict = row_to_dict(cursor, row)
             users.append(UserInfo(
-                user_id=user_dict["user_id"],
+                user_id=str(user_dict["user_id"]),
+                account_id=str(user_dict["account_id"]),
                 persona_type=user_dict["persona_type"] or "Unknown",
                 account_number=user_dict["account_number"],
                 bank_name=user_dict["bank_name"],
                 current_balance=float(user_dict["balance"]),
+                account_type=user_dict["account_type"],
+                currency=user_dict["currency"],
                 transaction_count=int(user_dict["transaction_count"]),
                 anomaly_count=int(user_dict["anomaly_count"])
             ))

@@ -64,6 +64,9 @@ After login, Bank Simulator opens `http://localhost:8000/dashboard`, which shows
 - `GET /sso/callback` - SSO callback
 - `GET /me` - Current bank session user
 - `POST /logout` - Clear bank session
+- `GET /accounts` - Accounts for the authenticated user
+- `POST /transactions` - Create a fake transaction; `balance_after` is calculated and account balance is updated
+- `PATCH /accounts/{account_id}/balance` - Set the current account balance
 - `GET /users` - List users
 - `GET /transactions?user_id=...` - Transactions
 - `GET /summary?user_id=...` - Summary

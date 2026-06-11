@@ -56,6 +56,10 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
+    chat_finalizer_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("CHAT_FINALIZER_ENABLED", "CHATBOT_FINALIZER_ENABLED"),
+    )
 
     # ── Database ─────────────────────────────────────────────────
     database_url: str = Field(

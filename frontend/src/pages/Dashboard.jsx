@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { getSummary } from '../api/services';
@@ -64,7 +64,9 @@ export default function Dashboard() {
     setScope(newScope);
     try {
       localStorage.setItem('spectra-summary-scope', newScope);
-    } catch {}
+    } catch {
+      // localStorage may be unavailable in restricted browser contexts.
+    }
   };
 
   // Utilities for formatting

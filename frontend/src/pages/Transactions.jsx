@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import {
@@ -9,7 +9,7 @@ import {
 } from '../api/services';
 
 export default function Transactions() {
-  const { currency, showToast, effectiveTheme } = useApp();
+  const { currency, showToast } = useApp();
   
   // Filters & Pagination State
   const [search, setSearch] = useState('');

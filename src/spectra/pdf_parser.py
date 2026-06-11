@@ -1,4 +1,4 @@
-﻿"""Universal PDF parser â€” extracts transactions from bank statement PDFs."""
+"""Universal PDF parser - extracts transactions from bank statement PDFs."""
 
 from __future__ import annotations
 
@@ -50,10 +50,10 @@ def parse_pdf(
     logger.info("Parsing PDF: %s", path.name)
 
     with pdfplumber.open(path) as pdf:
-        # â”€â”€ Strategy 1: Table extraction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # -- Strategy 1: Table extraction -------------------------
         table_transactions = _extract_from_tables(pdf, currency)
 
-        # â”€â”€ Strategy 2: Text-based regex extraction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # -- Strategy 2: Text-based regex extraction ---------------
         text_transactions = _extract_from_text_with_pypdf(path, PdfReader, currency)
 
         if not table_transactions and not text_transactions:
@@ -70,7 +70,7 @@ def parse_pdf(
                 chosen = table_transactions
                 source = "table"
             logger.info(
-                "PDF extraction: %d table + %d text transactions â†’ using %s (%d rows) from %s",
+                "PDF extraction: %d table + %d text transactions -> using %s (%d rows) from %s",
                 len(table_transactions),
                 len(text_transactions),
                 source,
@@ -94,7 +94,7 @@ def parse_pdf(
             return text_transactions
 
 
-# â”€â”€ Strategy 1: Table extraction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- Strategy 1: Table extraction ---------------------------------
 
 
 def _extract_from_tables(pdf: Any, currency: str) -> list[ParsedTransaction]:
@@ -162,7 +162,7 @@ def _rows_to_transactions(
                 amount = abs(credit) - abs(debit)
 
             statement_category = row[col["category"]].strip() if "category" in col else ""
-            statement_category = statement_category.replace("â‚¬", "").strip()
+            statement_category = statement_category.replace("?", "").strip()
 
             transactions.append(ParsedTransaction(
                 id=_make_id(date, description, amount),
@@ -174,7 +174,7 @@ def _rows_to_transactions(
             ))
         except (ValueError, IndexError) as e:
             skipped += 1
-            logger.debug("Skipping row: %s â€” %s", row, e)
+            logger.debug("Skipping row: %s - %s", row, e)
 
     if skipped:
         logger.warning("Skipped %d malformed rows", skipped)
@@ -182,7 +182,7 @@ def _rows_to_transactions(
     return transactions
 
 
-# â”€â”€ Strategy 2: Text-based regex extraction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- Strategy 2: Text-based regex extraction -----------------------
 
 
 # Pattern that matches a line starting with a date, then description, then amount(s)
@@ -272,7 +272,7 @@ def _extract_from_text_with_pypdf(
                     currency=currency,
                     raw_description=description,
                     statement_category=(
-                        re.sub(r'\s*â.*$', '', re.sub(r'[^\w\s&/-]', '', m.group("category"))).strip()
+                        re.sub(r'[^\w\s&/-]', '', m.group("category")).strip()
                         if "category" in m.groupdict()
                         else ""
                     ),

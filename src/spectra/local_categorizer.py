@@ -163,7 +163,6 @@ _STRIP_PREFIXES = re.compile(
     # French
     r"Paiement\s+(?:par\s+carte\s+)?(?:CB\s+)?|"
     r"Pr\u00e9l\u00e8vement\s+(?:SEPA\s+)?|"
-    r"PrÃ©lÃ¨vement\s+(?:SEPA\s+)?|"
     r"Virement\s+(?:SEPA\s+)?|"
     r"Retrait\s+(?:DAB\s+)?|"
     # Spanish / Portuguese

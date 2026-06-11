@@ -15,6 +15,18 @@ export const logout = () =>
 export const getSummary = (scope = 'cycle') => 
   api.get(`/api/summary?scope=${encodeURIComponent(scope)}`);
 
+export const sendChatMessage = (payload) =>
+  api.post('/api/chat', payload);
+
+export const sendChatFeedback = (payload) =>
+  api.post('/api/chat/feedback', payload);
+
+export const getChatSessions = (limit = 20) =>
+  api.get(`/api/chat/sessions?limit=${encodeURIComponent(limit)}`);
+
+export const getChatSessionMessages = (sessionId, limit = 50) =>
+  api.get(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages?limit=${encodeURIComponent(limit)}`);
+
 export const getTransactions = (params = {}) => {
   const query = new URLSearchParams();
   if (params.page) query.append('page', params.page);

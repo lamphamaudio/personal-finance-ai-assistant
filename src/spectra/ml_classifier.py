@@ -1,4 +1,4 @@
-﻿"""ML classifier for local mode â€” TF-IDF + Logistic Regression, bootstrapped with seed data.
+"""ML classifier for local mode - TF-IDF + Logistic Regression, bootstrapped with seed data.
 
 The classifier is always active: it starts with built-in seed examples that encode
 domain knowledge (common merchants and their categories), and improves as user
@@ -58,7 +58,7 @@ _SOURCE_PRIORITIES = {
     "user_override": 3,
 }
 
-# â”€â”€ Seed knowledge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- Seed knowledge ----------------------------------------------
 # Each tuple is (description_example, category).  These bootstrap the model
 # so it works from day-0 without any user history.
 
@@ -75,7 +75,7 @@ _SEED_MERCHANTS: list[tuple[list[str], str]] = [
     (["Pharmacity", "Long Chau", "Long Châu", "An Khang", "Benh vien", "Bệnh viện"], "Sức khỏe"),
     (["Vietnam Airlines", "Vietjet", "Bamboo Airways", "Agoda", "Traveloka", "Booking.com"], "Du lịch"),
 
-    # â”€â”€ Digital Subscriptions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- Digital Subscriptions ----------------------------------
     (["Netflix", "NETFLIX.COM", "ADDEBITO SDD NETFLIX.COM", "Netflix subscription"], "Đăng ký định kỳ"),
     (["Spotify", "SPOTIFY AB", "ADDEBITO SDD SPOTIFY AB", "Spotify Premium"], "Đăng ký định kỳ"),
     (["Apple", "APPLE.COM/BILL", "Apple Music", "Apple One", "iTunes"], "Đăng ký định kỳ"),
@@ -106,7 +106,7 @@ _SEED_MERCHANTS: list[tuple[list[str], str]] = [
     (["Apple TV+", "TV.APPLE.COM"], "Đăng ký định kỳ"),
     (["Porkbun", "Namecheap", "GoDaddy", "Hover.com", "Gandi.net", "Registro.it"], "Đăng ký định kỳ"),
 
-    # â”€â”€ Transport â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- Transport ---------------------------------------------
     (["Uber", "UBER TRIP", "UBER BV", "HELP.UBER.COM"], "Di chuyển"),
     (["Bolt", "BOLT.EU", "BOLT RIDE"], "Di chuyển"),
     (["Lyft", "LYFT RIDE"], "Di chuyển"),
@@ -120,7 +120,7 @@ _SEED_MERCHANTS: list[tuple[list[str], str]] = [
     (["Taxi", "RADIOTAXI", "TAXIFY"], "Di chuyển"),
     (["Lime scooter", "Bird scooter", "Tier scooter", "FreeNow"], "Di chuyển"),
 
-    # â”€â”€ Travel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- Travel ------------------------------------------------
     (["Ryanair", "RYANAIR LTD", "RYANAIR FR"], "Du lịch"),
     (["EasyJet", "EASYJET PLC"], "Du lịch"),
     (["Vueling", "WizzAir", "Lufthansa", "ITA Airways", "Alitalia"], "Du lịch"),
@@ -135,7 +135,7 @@ _SEED_MERCHANTS: list[tuple[list[str], str]] = [
     (["Tirrenia", "Grimaldi Lines", "GNV", "Ferry"], "Du lịch"),
     (["Frecciarossa", "Frecciargento", "Frecciabianca"], "Du lịch"),
 
-    # â”€â”€ Entertainment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- Entertainment -----------------------------------------
     (["Cinema", "UCI Cinema", "The Space Cinema"], "Giải trí"),
     (["Stadio", "Stadium", "Biglietti"], "Giải trí"),
     (["Concerto", "Concert", "Teatro", "Opera", "Museo"], "Giải trí"),
@@ -143,7 +143,7 @@ _SEED_MERCHANTS: list[tuple[list[str], str]] = [
     (["Steam", "PlayStation", "Xbox", "Nintendo", "Epic Games", "PSN"], "Giải trí"),
     (["Gardaland", "Mirabilandia", "Disneyland", "Parco divertimenti"], "Giải trí"),
 
-    # â”€â”€ Groceries â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- Groceries ---------------------------------------------
     (["Esselunga", "ESSELUNGA SPA", "POS ESSELUNGA"], "Đi chợ/Siêu thị"),
     (["Carrefour", "CARREFOUR EXPRESS", "CARREFOUR MARKET", "DIR. CARREFOUR"], "Đi chợ/Siêu thị"),
     (["Coop", "COOP ITALIA", "IPERCOOP", "NOVACOOP", "COOP ALLEANZA 3.0", "UNICOOP"], "Đi chợ/Siêu thị"),
@@ -159,7 +159,7 @@ _SEED_MERCHANTS: list[tuple[list[str], str]] = [
     (["Basko", "BASKO SPA", "SOGEGROSS"], "Đi chợ/Siêu thị"),
     (["Tigros", "TIGROS SPA"], "Đi chợ/Siêu thị"),
     (["Iper", "IPER LA GRANDE I", "FINIPER"], "Đi chợ/Siêu thị"),
-    (["NaturaSÃ¬", "NATURASI"], "Đi chợ/Siêu thị"),
+    (["NaturaSì", "NATURASI"], "Đi chợ/Siêu thị"),
     (["Tesco", "Sainsbury", "ASDA", "Waitrose", "Morrisons", "Marks Spencer"], "Đi chợ/Siêu thị"),
     (["Rewe", "Edeka", "Kaufland", "Netto", "Migros", "Denner"], "Đi chợ/Siêu thị"),
     (["Auchan", "Leclerc", "Intermarche", "Monoprix", "Carrefour"], "Đi chợ/Siêu thị"),
@@ -167,23 +167,23 @@ _SEED_MERCHANTS: list[tuple[list[str], str]] = [
     (["Walmart", "Target", "Kroger", "Whole Foods", "Trader Joe", "7-Eleven"], "Đi chợ/Siêu thị"),
     (["Supermercato", "Supermarket", "Grocery", "Alimentari"], "Đi chợ/Siêu thị"),
 
-    # â”€â”€ Food & Dining â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- Food & Dining -----------------------------------------
     (["Uber Eats", "UBER EATS DELIVERY", "UBEREATS"], "Ăn uống"),
     (["Deliveroo", "DELIVEROO.COM", "DELIVEROO ITALY"], "Ăn uống"),
     (["Glovo", "GLOVO APP", "FOODINHO"], "Ăn uống"),
     (["Just Eat", "JUST EAT", "JUSTEAT", "JUST EAT ITALY"], "Ăn uống"),
     (["Old Wild West", "OLD WILD WEST", "CIGIERRE", "ROADHOUSE", "ROADHOUSE GRILL", "CALAVERA", "SUSHI DAILY", "SUSHIKO", "POKE HOUSE", "I LOVE POKE", "MACHA POKE", "LA PIADINERIA", "ALICE PIZZA", "SPONTINI", "ROM'ANTICA", "ROSSOPOMODORO", "FRATELLI LA BUFALA", "GROM", "VENCHI"], "Ăn uống"),
     (["Ristorante", "Trattoria", "Pizzeria", "Osteria", "Enoteca", "Restaurant"], "Ăn uống"),
-    (["Bar CaffÃ¨", "CaffÃ¨ Roma", "Cafeteria", "Pasticceria", "Costa Coffee", "Dunkin"], "Ăn uống"),
+    (["Bar Caffè", "Caffè Roma", "Cafeteria", "Pasticceria", "Costa Coffee", "Dunkin"], "Ăn uống"),
     (["Sushi", "Sushiko", "Ramen", "Udon"], "Ăn uống"),
-    (["Poke bowl", "PokÃ¨ house"], "Ăn uống"),
+    (["Poke bowl", "Pokè house"], "Ăn uống"),
     (["Bakery", "Panetteria", "Forno", "Boulangerie", "Pret a Manger"], "Ăn uống"),
     (["Gelateria", "Gelato shop"], "Ăn uống"),
     (["Domino", "Papa Johns", "Pizza Hut"], "Ăn uống"),
     (["Autogrill", "AUTOGRILL SPA"], "Ăn uống"),
     (["Wolt", "WOLT.COM"], "Ăn uống"),
 
-    # â”€â”€ Shopping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- Shopping ----------------------------------------------
     (["Amazon", "AMAZON EU SARL", "AMZN MKTP", "AMAZON.IT", "AMAZON MARKETPLACE", "AMAZON PAY", "AMAZON PRIME"], "Mua sắm"),
     (["AliExpress", "ALIPAY", "ALIPAY*ALIEXPRESS", "ALIBABA", "Temu", "TEMU.COM", "Shein", "SHEIN.COM", "ASOS", "Zalando", "ZALANDO SE", "ZALANDO PRIVE"], "Mua sắm"),
     (["IKEA", "IKEA ITALIA RETAIL", "POS IKEA", "IKEA.IT"], "Mua sắm"),
@@ -197,7 +197,7 @@ _SEED_MERCHANTS: list[tuple[list[str], str]] = [
     (["Satispay", "SATISPAY", "SATISPAY EUROPE"], "Mua sắm"),
     (["PayPal purchase", "PAYPAL PAYMENT", "PAYPAL *"], "Mua sắm"),
 
-    # â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- Health ------------------------------------------------
     (["Farmacia", "Pharmacy", "Pharmacie", "Apotheke", "CVS", "Walgreens"], "Sức khỏe"),
     (["Rossmann", "DM Drogerie"], "Sức khỏe"),
     (["Dottore", "Medico", "Clinica", "Ospedale", "Hospital"], "Sức khỏe"),
@@ -205,14 +205,14 @@ _SEED_MERCHANTS: list[tuple[list[str], str]] = [
     (["Psicologo", "Psicologa", "Terapista", "Fisioterapista"], "Sức khỏe"),
     (["Ottica", "Visita oculistica", "Optician"], "Sức khỏe"),
 
-    # â”€â”€ Health & Fitness â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- Health & Fitness --------------------------------------
     (["Palestra", "Gym", "Fitness club", "Wellness center", "CrossFit", "Pilates", "Yoga"], "Sức khỏe"),
 
-    # â”€â”€ Insurance â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- Insurance ---------------------------------------------
     (["Assicurazione", "Bảo hiểm", "AXA", "Allianz", "Generali", "Zurich", "UnipolSai"], "Bảo hiểm"),
     (["RC Auto", "Polizza auto", "Premio assicurativo", "Direct Line", "BUPA"], "Bảo hiểm"),
 
-    # â”€â”€ Utilities â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- Utilities ---------------------------------------------
     (["Vodafone", "VODAFONE ITALIA", "VODAFONE OMNITEL"], "Điện nước"),
     (["TIM", "TIM TELECOM", "TELECOM ITALIA"], "Điện nước"),
     (["Wind Tre", "WINDTRE SPA", "WIND TRE", "INFOSTRADA"], "Điện nước"),
@@ -221,35 +221,35 @@ _SEED_MERCHANTS: list[tuple[list[str], str]] = [
     (["Bolletta", "Utenza", "Gas luce", "Electricity", "Water bill", "Fattura", "Acqua", "Teleriscaldamento"], "Điện nước"),
     (["Telepass", "TELEPASS SPA", "TELEPASS FAMILY"], "Di chuyển"),
 
-    # â”€â”€ Cash â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- Cash --------------------------------------------------
     (["Versamento contanti", "Deposito contanti", "Cash deposit"], "Tiền mặt"),
     (["Prelievo", "Prelievo Bancomat", "ATM Cash", "Cash withdrawal", "Prelievo con carta"], "Tiền mặt"),
 
-    # â”€â”€ Taxes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- Taxes -------------------------------------------------
     (["F24", "Agenzia Entrate", "Tasse", "Tributi", "IMU", "TARI", "Tax"], "Khác"),
     (["Comune di", "Regione", "Provincia di", "ASL", "Council"], "Khác"),
     (["Bollo auto", "PRA", "DVLA"], "Khác"),
 
-    # â”€â”€ Education â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    (["UniversitÃ ", "Politecnico", "Accademia", "Corso di", "College", "School"], "Giáo dục"),
+    # -- Education ---------------------------------------------
+    (["Università", "Politecnico", "Accademia", "Corso di", "College", "School"], "Giáo dục"),
     (["Udemy", "Coursera", "Skillshare", "Duolingo", "Busuu"], "Giáo dục"),
     (["Libreria Feltrinelli", "Mondadori", "Libri", "Waterstones", "Barnes Noble"], "Giáo dục"),
 
-    # â”€â”€ Income & Transfers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- Income & Transfers ------------------------------------
     (["Stipendio", "STIPENDIO MESE", "Lương", "Payroll", "Retribuzione",
       "ACCREDITO STIPENDIO", "ACCREDITO RETRIBUZIONE", "ACCREDITO SALARIO",
       "Accredito competenze", "Accredito emolumenti", "Bonifico stipendio",
       "Emolumenti", "Competenze mensili", "Retribuzione mensile",
       "Gehalt", "Lohn", "Gehaltseingang",           # German
       "Salaire", "Virement salaire",                # French
-      "NÃ³mina", "Salario",                          # Spanish
-      "SalÃ¡rio", "Ordenado"], "Lương"),             # Portuguese
+      "Nómina", "Salario",                          # Spanish
+      "Salário", "Ordenado"], "Lương"),             # Portuguese
     (["Pensione", "Thu nhập", "ACCREDITO PENSIONE", "INPS pensione",
-      "Rente", "Retraite", "JubilaciÃ³n", "PensÃ£o"], "Thu nhập"),
+      "Rente", "Retraite", "Jubilación", "Pensão"], "Thu nhập"),
     (["Bonifico ricevuto", "Accredito bonifico", "Bonifico in entrata",
       "ACCREDITO BONIFICO", "Accredito da",
-      "Incoming transfer", "Ãœberweisung eingegangen",
-      "Virement reÃ§u", "Transferencia recibida"], "Chuyển khoản"),
+      "Incoming transfer", "Überweisung eingegangen",
+      "Virement reçu", "Transferencia recibida"], "Chuyển khoản"),
     (["Rimborso", "Refund", "Cashback",
       "Remboursement", "Reembolso", "Erstattung"], "Hoàn tiền"),
     (["Revolut top-up", "REVOLUT TOP UP"], "Chuyển khoản"),
@@ -276,7 +276,7 @@ _BANKING_PREFIXES = [
     "Lastschrift ",
     # French
     "Paiement CB ",
-    "PrÃ©lÃ¨vement SEPA ",
+    "Prélèvement SEPA ",
     # Spanish
     "Pago con tarjeta ",
 ]
@@ -430,7 +430,7 @@ def train_classifier(
         from sklearn.pipeline import FeatureUnion, Pipeline
         from sklearn.preprocessing import FunctionTransformer
     except ImportError:
-        logger.info("scikit-learn not installed â€” ML classifier disabled. Install with: pip install scikit-learn")
+        logger.info("scikit-learn not installed - ML classifier disabled. Install with: pip install scikit-learn")
         return None
 
     training_examples = build_training_examples(training_data)
@@ -448,7 +448,7 @@ def train_classifier(
 
     unique_cats = set(categories)
     if len(unique_cats) < 2:
-        logger.info("Only 1 category in combined data â€” ML classifier not useful")
+        logger.info("Only 1 category in combined data - ML classifier not useful")
         return None
 
     pipeline = Pipeline([
@@ -531,7 +531,7 @@ def predict(classifier: Any, description: str) -> tuple[str, float]:
 
     Returns
     -------
-    (category, confidence) â€” confidence is the max class probability.
+    (category, confidence) - confidence is the max class probability.
     """
     result = predict_details(classifier, description)
     return result.category, result.confidence

@@ -11,6 +11,8 @@ from typing import Any
 
 logger = logging.getLogger("spectra.csv_parser")
 
+_MOJIBAKE_EURO = b"\xe2\x82\xac".decode("cp1252")
+
 
 # ── Column name mappings ──────────────────────────────────────────
 # Maps common bank column names → standard field names
@@ -110,7 +112,7 @@ def _detect_delimiter(sample: str) -> str:
 def _parse_amount(raw: str) -> float:
     """Parse an amount string handling Italian and English formats."""
     # Remove currency symbols and whitespace
-    s = raw.strip().replace("â‚¬", "")
+    s = raw.strip().replace(_MOJIBAKE_EURO, "")
     s = re.sub(r"(?i)\b(VND|VNĐ|EUR|USD|GBP|JPY|AUD|CAD|CHF|SGD)\b", "", s)
     s = re.sub(r"[€$£₫đĐ\s]", "", s)
     # Strip leading '+' (some banks like ISyBank use +1.500,00 for credits)
