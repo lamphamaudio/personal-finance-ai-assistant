@@ -16,6 +16,10 @@ _SETTINGS_CACHE: Settings | None = None
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _ENV_FILE = _PROJECT_ROOT / ".env"
 
+from dotenv import load_dotenv
+if _ENV_FILE.exists():
+    load_dotenv(dotenv_path=_ENV_FILE)
+
 
 class Settings(BaseSettings):
     """All Spectra settings, loaded from environment or .env file."""
@@ -60,6 +64,16 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("CHAT_FINALIZER_ENABLED", "CHATBOT_FINALIZER_ENABLED"),
     )
+
+    # ── Observability & Tracing ──────────────────────────────────
+    langsmith_api_key: str = ""
+    langsmith_project: str = "spectra-chatbot"
+    otel_exporter_otlp_endpoint: str = ""
+    otel_service_name: str = "spectra-chatbot"
+
+    # ── Tool Execution Settings ──────────────────────────────────
+    chat_tool_timeout: float = 5.0
+    chat_tool_cache_ttl: float = 60.0
 
     # ── Database ─────────────────────────────────────────────────
     database_url: str = Field(

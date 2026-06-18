@@ -67,18 +67,42 @@ class ChatSupervisor:
         self.chat_context = chat_context or {}
 
     async def respond(self, chat_request: ChatRequest) -> ChatResponse:
-        # 1. Run Input Guardrails
-        from spectra.chat.guardrails.engine import guardrail_engine
-        early_input = guardrail_engine.check_input(chat_request.message)
-        if early_input:
-            return early_input
+        from spectra.chat.tracing import start_trace
+        inputs = {
+            "message": chat_request.message,
+            "session_id": chat_request.session_id,
+            "scope": chat_request.scope,
+            "confirmation_id": chat_request.confirmation_id,
+            "confirm": chat_request.confirm,
+        }
+        with start_trace(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            name="chat_request",
+            inputs=inputs,
+        ) as root_rec:
+            # 1. Run Input Guardrails
+            from spectra.chat.guardrails.engine import guardrail_engine
+            early_input = guardrail_engine.check_input(chat_request.message)
+            if early_input:
+                root_rec.outputs = {"answer": early_input.answer, "intent": early_input.intent.value}
+                return early_input
 
-        # 2. Get inner response
-        response = await self._respond_inner(chat_request)
+            # 2. Get inner response
+            response = await self._respond_inner(chat_request)
 
-        # 3. Run Output Guardrails
-        response.answer = guardrail_engine.check_output(response.answer, response.intent.value)
-        return response
+            # 3. Run Output Guardrails
+            response.answer = guardrail_engine.check_output(response.answer, response.intent.value)
+            
+            root_rec.outputs = {
+                "answer": response.answer,
+                "intent": response.intent.value,
+                "tool_calls": [
+                    {"tool_name": t.tool_name, "arguments": t.arguments, "status": t.status, "error": t.error}
+                    for t in response.tool_calls
+                ]
+            }
+            return response
 
     async def _respond_inner(self, chat_request: ChatRequest) -> ChatResponse:
         confirmation_response = await self._handle_confirmation_request(chat_request)
@@ -98,21 +122,31 @@ class ChatSupervisor:
             raise MissingOpenAIKeyError("OPENAI_API_KEY is missing")
 
         try:
+            from spectra.chat.tracing import trace_span
+
             client = self._make_openai_client(api_key, timeout=30.0)
             model = self.settings.openai_model or _SAFE_DEFAULT_MODEL
             messages = [
                 {"role": "system", "content": SUPERVISOR_SYSTEM_PROMPT},
                 {"role": "user", "content": self._build_user_message(chat_request)},
             ]
-            first = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=openai_tool_definitions(),
-                tool_choice="auto",
-                parallel_tool_calls=False,
-                temperature=0.2,
-            )
-            assistant_message = first.choices[0].message
+            with trace_span("openai_supervisor", "llm", {"model": model, "messages_count": len(messages)}) as span_rec:
+                first = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=openai_tool_definitions(),
+                    tool_choice="auto",
+                    parallel_tool_calls=False,
+                    temperature=0.2,
+                )
+                assistant_message = first.choices[0].message
+                span_rec.outputs = {
+                    "choices_count": len(first.choices),
+                    "tool_calls": [
+                        {"name": tc.function.name, "arguments": tc.function.arguments}
+                        for tc in (first.choices[0].message.tool_calls or [])
+                    ]
+                }
             messages.append(assistant_message.model_dump(exclude_none=True))
             traces: list[ChatToolCallTrace] = []
 
@@ -138,8 +172,10 @@ class ChatSupervisor:
                 )
 
             if tool_calls:
-                final = client.chat.completions.create(model=model, messages=messages, temperature=0.2)
-                answer = final.choices[0].message.content or "Xin loi, minh chua the tao cau tra loi."
+                with trace_span("openai_supervisor_final", "llm", {"model": model, "messages_count": len(messages)}) as span_rec:
+                    final = client.chat.completions.create(model=model, messages=messages, temperature=0.2)
+                    answer = final.choices[0].message.content or "Xin loi, minh chua the tao cau tra loi."
+                    span_rec.outputs = {"answer": answer}
             else:
                 answer = assistant_message.content or "Xin loi, minh chua the tao cau tra loi."
 
@@ -208,9 +244,13 @@ class ChatSupervisor:
         ]
 
         try:
+            from spectra.chat.tracing import trace_span
+
             client = self._make_openai_client(api_key, timeout=20.0)
-            final = client.chat.completions.create(model=model, messages=messages, temperature=0.2)
-            answer = str(final.choices[0].message.content or "").strip()
+            with trace_span("openai_finalizer", "llm", {"model": model, "messages_count": len(messages)}) as span_rec:
+                final = client.chat.completions.create(model=model, messages=messages, temperature=0.2)
+                answer = str(final.choices[0].message.content or "").strip()
+                span_rec.outputs = {"answer": answer}
         except Exception:
             logger.debug("Chat finalizer failed", exc_info=True)
             return self._with_finalizer_debug(chat_request, response, used=False, fallback_reason="openai_error")
@@ -1731,4 +1771,6 @@ class ChatSupervisor:
         lower = ChatSupervisor._fold(message)
         if any(word in lower for word in ["chi tieu", "spending", "danh muc"]):
             return ChatIntent.SPENDING_BREAKDOWN
+        if any(word in lower for word in ["tai khoan", "account number", "mat khau", "password", "token", "api key", "rieng tu", "privacy", "ca nhan"]):
+            return ChatIntent.PRIVACY_OR_PERMISSION
         return ChatIntent.GENERAL_FINANCE_ADVICE
