@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+import json
+import logging
+import sqlite3
+import time
+from typing import Any, Dict, List, Optional
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
+import httpx
+from jsonschema import validate, ValidationError
+from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential, retry_if_exception
 
 from spectra.chat.audit import log_write_tool_call
 from spectra.chat.confirmation import pending_actions
@@ -14,6 +22,107 @@ from spectra.chat.redaction import mask_account_number, redact_payload
 from spectra.chat.tools import get_tool
 from spectra.categories import UNCATEGORIZED, normalize_category
 from spectra.ml_classifier import build_seed_data
+from spectra.chat.tracing import trace_span
+from spectra.config import load_settings
+
+logger = logging.getLogger("spectra.chat.executor")
+
+# Try importing psycopg operational error if available
+try:
+    from psycopg import OperationalError as PsycopgOperationalError
+    _PSYGOPG_ERRORS = (PsycopgOperationalError,)
+except ImportError:
+    _PSYGOPG_ERRORS = ()
+
+TRANSIENT_EXCEPTIONS = (
+    sqlite3.OperationalError,
+    TimeoutError,
+    asyncio.TimeoutError,
+    httpx.RequestError,
+    httpx.HTTPStatusError,
+) + _PSYGOPG_ERRORS
+
+
+def is_transient_exception(exc: Exception) -> bool:
+    """Check if the exception is due to transient system or network conditions."""
+    if isinstance(exc, TRANSIENT_EXCEPTIONS):
+        return True
+    if hasattr(exc, "response") and hasattr(exc.response, "status_code"):
+        if exc.response.status_code >= 500:
+            return True
+    return False
+
+
+class ToolCache:
+    """Thread-safe, session-scoped in-memory cache for read-only chatbot tools."""
+    def __init__(self) -> None:
+        # Key: (user_id, session_id, tool_name, arguments_json) -> (data, expiry)
+        self._cache: Dict[tuple[str, str, str, str], tuple[Any, float]] = {}
+
+    def get(self, user_id: str, session_id: str | None, tool_name: str, arguments: dict[str, Any]) -> Any | None:
+        sess = str(session_id or "").strip()
+        args_json = json.dumps(arguments, sort_keys=True)
+        key = (user_id, sess, tool_name, args_json)
+        if key in self._cache:
+            data, expiry = self._cache[key]
+            if time.time() < expiry:
+                return data
+            else:
+                del self._cache[key]
+        return None
+
+    def set(self, user_id: str, session_id: str | None, tool_name: str, arguments: dict[str, Any], data: Any, ttl: float) -> None:
+        sess = str(session_id or "").strip()
+        args_json = json.dumps(arguments, sort_keys=True)
+        key = (user_id, sess, tool_name, args_json)
+        self._cache[key] = (data, time.time() + ttl)
+
+    def invalidate_session(self, user_id: str, session_id: str | None) -> None:
+        """Clear the cache for a specific session after write actions."""
+        sess = str(session_id or "").strip()
+        keys_to_del = [k for k in self._cache if k[0] == user_id and k[1] == sess]
+        for k in keys_to_del:
+            try:
+                del self._cache[k]
+            except KeyError:
+                pass
+
+
+# Global thread-safe tool cache instance
+_TOOL_CACHE = ToolCache()
+
+
+
+def sanitize_arguments(arguments: dict[str, Any], parameters_schema: dict[str, Any]) -> dict[str, Any]:
+    """Helper to clean user_id and clamp out-of-bound arguments before schema validation."""
+    args = dict(arguments)
+    properties = parameters_schema.get("properties", {})
+    
+    # 1. Remove user_id if not explicitly expected by schema properties
+    if "user_id" in args and "user_id" not in properties:
+        args.pop("user_id")
+        
+    # 2. Clamp numeric fields to their schema minimum/maximum limits
+    for prop_name, prop_schema in properties.items():
+        if prop_name in args:
+            val = args[prop_name]
+            prop_type = prop_schema.get("type")
+            if prop_type in ("integer", "number"):
+                try:
+                    if prop_type == "integer":
+                        numeric_val = int(val)
+                    else:
+                        numeric_val = float(val)
+                        
+                    if "minimum" in prop_schema and numeric_val < prop_schema["minimum"]:
+                        numeric_val = prop_schema["minimum"]
+                    if "maximum" in prop_schema and numeric_val > prop_schema["maximum"]:
+                        numeric_val = prop_schema["maximum"]
+                        
+                    args[prop_name] = numeric_val
+                except (ValueError, TypeError):
+                    pass
+    return args
 
 
 class ToolExecutor:
@@ -40,113 +149,187 @@ class ToolExecutor:
         if guard_result:
             return guard_result
         tool = get_tool(tool_name)
-        try:
-            if tool_name == "get_current_user":
-                data = self._get_current_user()
-            elif tool_name == "get_account_summary":
-                data = self._get_account_summary(arguments)
-            elif tool_name == "get_transactions":
-                data = self._get_transactions(arguments)
-            elif tool_name == "get_category_options":
-                data = self._get_category_options()
-            elif tool_name == "update_transaction_category":
-                data = self._update_transaction_category(arguments)
-            elif tool_name == "test_category_rule":
-                data = self._test_category_rule(arguments)
-            elif tool_name == "create_category_rule":
-                data = self._create_category_rule(arguments)
-            elif tool_name == "get_category_rules":
-                data = self._get_category_rules()
-            elif tool_name == "get_learning_summary":
-                data = self._get_learning_summary()
-            elif tool_name == "get_anomalies":
-                data = self._get_anomalies(arguments)
-            elif tool_name == "get_balance_forecast":
-                data = self._get_balance_forecast(arguments)
-            elif tool_name == "explain_anomaly":
-                data = self._explain_anomaly(arguments)
-            elif tool_name == "get_financial_health_score":
-                data = self._get_financial_health_score(arguments)
-            elif tool_name == "plan_savings_goal":
-                data = self._plan_savings_goal(arguments)
-            elif tool_name == "simulate_savings_adjustment":
-                data = self._simulate_savings_adjustment(arguments)
-            elif tool_name == "get_savings_goals":
-                data = self._get_savings_goals(arguments)
-            elif tool_name == "create_savings_goal":
-                data = self._create_savings_goal(arguments)
-            elif tool_name == "update_savings_goal":
-                data = self._update_savings_goal(arguments)
-            elif tool_name == "archive_savings_goal":
-                data = self._archive_savings_goal(arguments)
-            elif tool_name == "get_budget_status":
-                data = self._get_budget_status(arguments)
-            elif tool_name == "recommend_budget_plan":
-                data = self._recommend_budget_plan(arguments)
-            elif tool_name == "simulate_budget_adjustment":
-                data = self._simulate_budget_adjustment(arguments)
-            elif tool_name == "compare_budget_vs_actual":
-                data = self._compare_budget_vs_actual(arguments)
-            elif tool_name == "update_budget_limit":
-                data = self._update_budget_limit(arguments)
-            elif tool_name == "upsert_budget_plan":
-                data = self._upsert_budget_plan(arguments)
-            elif tool_name == "get_recurring_transactions":
-                data = self._get_recurring_transactions(arguments)
-            elif tool_name == "compare_period_spending":
-                data = self._compare_period_spending(arguments)
-            elif tool_name == "explain_budget_overrun":
-                data = self._explain_budget_overrun(arguments)
-            elif tool_name == "get_cashflow_calendar":
-                data = self._get_cashflow_calendar(arguments)
-            elif tool_name == "simulate_purchase_impact":
-                data = self._simulate_purchase_impact(arguments)
-            elif tool_name == "get_debt_summary":
-                data = self._get_debt_summary(arguments)
-            elif tool_name == "get_emergency_fund_status":
-                data = self._get_emergency_fund_status(arguments)
-            elif tool_name == "get_conversation_context":
-                data = self._get_conversation_context(arguments)
-            elif tool_name == "get_user_memories":
-                data = self._get_user_memories(arguments)
-            elif tool_name == "remember_user_preference":
-                data = self._remember_user_preference(arguments)
-            elif tool_name == "forget_user_memory":
-                data = self._forget_user_memory(arguments)
-            else:
-                return ToolExecutionResult(
-                    tool_name=tool_name,
-                    status="rejected",
-                    error="Tool is not executable by the chatbot.",
-                )
-        except Exception:
-            if not tool.read_only and confirmation_id:
-                log_write_tool_call(
-                    user_id=self.user_id,
-                    session_id=session_id,
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    status="error",
-                    confirmation_id=confirmation_id,
-                    error_message="Tool execution failed.",
-                )
+        if not tool:
             return ToolExecutionResult(
                 tool_name=tool_name,
-                status="error",
-                error="Tool execution failed.",
+                status="rejected",
+                error="Tool is not registered for the chatbot.",
             )
 
-        if not tool.read_only and confirmation_id:
-            pending_actions.mark_confirmed(confirmation_id)
-            log_write_tool_call(
-                user_id=self.user_id,
-                session_id=session_id,
+        # Sanitize arguments (remove user_id and clamp values)
+        arguments = sanitize_arguments(arguments, tool.parameters)
+
+        # 1. Input Schema Validation
+        try:
+            validate(instance=arguments, schema=tool.parameters)
+        except ValidationError as e:
+            logger.warning("Input validation failed for tool %s: %s", tool_name, e.message)
+            return ToolExecutionResult(
                 tool_name=tool_name,
-                arguments=arguments,
-                status="success",
-                confirmation_id=confirmation_id,
+                status="rejected",
+                error=f"Input validation failed: {e.message}",
             )
-        return ToolExecutionResult(tool_name=tool_name, status="success", data=redact_payload(data))
+
+        # 2. Cache Check (Read-only tools only)
+        settings = load_settings()
+        if tool.read_only:
+            cached_data = _TOOL_CACHE.get(self.user_id, session_id, tool_name, arguments)
+            if cached_data is not None:
+                logger.info("Cache hit for read-only tool %s", tool_name)
+                return ToolExecutionResult(tool_name=tool_name, status="success", data=cached_data)
+
+        # Helper runner logic for tool execution
+        def run_sync_logic() -> Any:
+            if tool_name == "get_current_user":
+                return self._get_current_user()
+            elif tool_name == "get_account_summary":
+                return self._get_account_summary(arguments)
+            elif tool_name == "get_transactions":
+                return self._get_transactions(arguments)
+            elif tool_name == "get_category_options":
+                return self._get_category_options()
+            elif tool_name == "update_transaction_category":
+                return self._update_transaction_category(arguments)
+            elif tool_name == "test_category_rule":
+                return self._test_category_rule(arguments)
+            elif tool_name == "create_category_rule":
+                return self._create_category_rule(arguments)
+            elif tool_name == "get_category_rules":
+                return self._get_category_rules()
+            elif tool_name == "get_learning_summary":
+                return self._get_learning_summary()
+            elif tool_name == "get_anomalies":
+                return self._get_anomalies(arguments)
+            elif tool_name == "get_balance_forecast":
+                return self._get_balance_forecast(arguments)
+            elif tool_name == "explain_anomaly":
+                return self._explain_anomaly(arguments)
+            elif tool_name == "get_financial_health_score":
+                return self._get_financial_health_score(arguments)
+            elif tool_name == "plan_savings_goal":
+                return self._plan_savings_goal(arguments)
+            elif tool_name == "simulate_savings_adjustment":
+                return self._simulate_savings_adjustment(arguments)
+            elif tool_name == "get_savings_goals":
+                return self._get_savings_goals(arguments)
+            elif tool_name == "create_savings_goal":
+                return self._create_savings_goal(arguments)
+            elif tool_name == "update_savings_goal":
+                return self._update_savings_goal(arguments)
+            elif tool_name == "archive_savings_goal":
+                return self._archive_savings_goal(arguments)
+            elif tool_name == "get_budget_status":
+                return self._get_budget_status(arguments)
+            elif tool_name == "recommend_budget_plan":
+                return self._recommend_budget_plan(arguments)
+            elif tool_name == "simulate_budget_adjustment":
+                return self._simulate_budget_adjustment(arguments)
+            elif tool_name == "compare_budget_vs_actual":
+                return self._compare_budget_vs_actual(arguments)
+            elif tool_name == "update_budget_limit":
+                return self._update_budget_limit(arguments)
+            elif tool_name == "upsert_budget_plan":
+                return self._upsert_budget_plan(arguments)
+            elif tool_name == "get_recurring_transactions":
+                return self._get_recurring_transactions(arguments)
+            elif tool_name == "compare_period_spending":
+                return self._compare_period_spending(arguments)
+            elif tool_name == "explain_budget_overrun":
+                return self._explain_budget_overrun(arguments)
+            elif tool_name == "get_cashflow_calendar":
+                return self._get_cashflow_calendar(arguments)
+            elif tool_name == "simulate_purchase_impact":
+                return self._simulate_purchase_impact(arguments)
+            elif tool_name == "get_debt_summary":
+                return self._get_debt_summary(arguments)
+            elif tool_name == "get_emergency_fund_status":
+                return self._get_emergency_fund_status(arguments)
+            elif tool_name == "get_conversation_context":
+                return self._get_conversation_context(arguments)
+            elif tool_name == "get_user_memories":
+                return self._get_user_memories(arguments)
+            elif tool_name == "remember_user_preference":
+                return self._remember_user_preference(arguments)
+            elif tool_name == "forget_user_memory":
+                return self._forget_user_memory(arguments)
+            else:
+                raise ValueError("Tool is not executable by the chatbot.")
+
+        # 3. Execution with Timeout, Retry & Tracing
+        with trace_span(tool_name, "tool", arguments) as rec:
+            try:
+                # Custom timeout or global default from settings
+                timeout = getattr(tool, "timeout", settings.chat_tool_timeout)
+                
+                retrier = AsyncRetrying(
+                    stop=stop_after_attempt(3),
+                    wait=wait_exponential(multiplier=0.5, min=0.5, max=5),
+                    retry=retry_if_exception(is_transient_exception),
+                    reraise=True,
+                )
+
+                async def _run_in_executor() -> Any:
+                    return await asyncio.get_running_loop().run_in_executor(None, run_sync_logic)
+
+                try:
+                    async for attempt in retrier:
+                        with attempt:
+                            data = await asyncio.wait_for(_run_in_executor(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    raise TimeoutError(f"Tool {tool_name} execution timed out after {timeout} seconds.")
+
+                # Output validation if tool defines an output schema (optional metadata)
+                output_schema = getattr(tool, "output_schema", None)
+                if output_schema:
+                    try:
+                        validate(instance=data, schema=output_schema)
+                    except ValidationError as e:
+                        logger.error("Output validation failed for tool %s: %s", tool_name, e.message)
+                        raise ValueError(f"Tool output validation failed: {e.message}")
+
+                # Success hooks
+                if not tool.read_only and confirmation_id:
+                    pending_actions.mark_confirmed(confirmation_id)
+                    log_write_tool_call(
+                        user_id=self.user_id,
+                        session_id=session_id,
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        status="success",
+                        confirmation_id=confirmation_id,
+                    )
+                    # Clear session cache when data is modified
+                    _TOOL_CACHE.invalidate_session(self.user_id, session_id)
+
+                if tool.read_only:
+                    # Cache successful read-only results
+                    _TOOL_CACHE.set(self.user_id, session_id, tool_name, arguments, data, settings.chat_tool_cache_ttl)
+
+                redacted_data = redact_payload(data)
+                rec.outputs = redacted_data
+                return ToolExecutionResult(tool_name=tool_name, status="success", data=redacted_data)
+
+            except Exception as e:
+                error_msg = str(e)
+                rec.error = error_msg
+                rec.status = "error"
+                logger.error("Error executing tool %s: %s", tool_name, error_msg, exc_info=True)
+
+                if not tool.read_only and confirmation_id:
+                    log_write_tool_call(
+                        user_id=self.user_id,
+                        session_id=session_id,
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        status="error",
+                        confirmation_id=confirmation_id,
+                        error_message=error_msg,
+                    )
+                return ToolExecutionResult(
+                    tool_name=tool_name,
+                    status="error",
+                    error=f"Tool execution failed: {error_msg}",
+                )
 
 
 
