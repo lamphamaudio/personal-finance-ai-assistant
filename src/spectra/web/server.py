@@ -1185,6 +1185,14 @@ def api_summary(
     date_to: str = Query(""),
 ):
     """Return dashboard-level stats."""
+    # Resolve FastAPI Query defaults if called programmatically
+    if not isinstance(scope, str):
+        scope = "cycle"
+    if not isinstance(date_from, str):
+        date_from = ""
+    if not isinstance(date_to, str):
+        date_to = ""
+
     scope = (scope or "cycle").strip().lower()
     date_from = (date_from or "").strip()
     date_to = (date_to or "").strip()
@@ -2022,7 +2030,8 @@ async def _stream_processed_transactions(
     yield evt(25, "Checking for duplicates...")
     await asyncio.sleep(0)
     with _get_db() as db:
-        new_txns = [t for t in parsed if not db.is_seen(t.id, user_id=user_id)]
+        seen_ids = db.get_seen_ids([t.id for t in parsed], user_id=user_id)
+        new_txns = [t for t in parsed if t.id not in seen_ids]
         overrides = db.get_overrides()
         category_rules = db.get_category_rules(user_id)
         merchant_db = db.get_merchant_categories()
@@ -2112,10 +2121,8 @@ async def _stream_processed_transactions(
             else:
                 api_key, model = settings.openai_api_key, settings.openai_model
 
-            for pct in range(30, 88, 5):
-                yield evt(pct, f"Waiting for {provider.title()} AI...")
-                await asyncio.sleep(0.4)
-
+            yield evt(35, f"Categorizing {len(flat)} transactions with {provider.title()} AI...")
+            await asyncio.sleep(0)  # flush the progress event before the blocking call
             categorised.extend(categorise(flat, [], provider=provider,
                                           api_key=api_key, model=model,
                                           base_currency=base_currency))
@@ -2266,169 +2273,6 @@ async def api_upload(request: Request, file: UploadFile = File(...)):
 
             async for chunk in _stream_processed_transactions(parsed, settings, base_currency, user_id=user_id):
                 yield chunk
-            return
-
-            # -- Phase 3: dedup -------------------------------------
-            yield evt(25, "Checking for duplicates...")
-            await asyncio.sleep(0)
-            with _get_db() as db:
-                new_txns = [t for t in parsed if not db.is_seen(t.id, user_id=user_id)]
-                overrides = db.get_overrides()
-                category_rules = db.get_category_rules(user_id)
-                merchant_db = db.get_merchant_categories()
-                training_data = db.get_training_data()
-
-            if not new_txns:
-                yield evt(100, "All transactions already imported", done=True,
-                          transactions=[], message="All transactions already imported")
-                return
-
-            n = len(new_txns)
-
-            # -- Phase 4: categorise (25% -> 92%, per transaction) ---
-            from spectra.ai import CategorisedTransaction
-
-            # Pre-categorise from overrides (instant)
-            pre_cat = []
-            to_process = []
-            override_count = 0
-            rule_count = 0
-            for t in new_txns:
-                od = t.raw_description
-                counterpart = str(getattr(t, "counterpart", "") or "")
-                if od in overrides:
-                    pre_cat.append(CategorisedTransaction(
-                        id=t.id, original_description=od,
-                        clean_name=overrides[od]["clean_name"],
-                        category=overrides[od]["category"],
-                        amount=t.amount, currency=t.currency, date=t.date,
-                    ))
-                    override_count += 1
-                    continue
-
-                from spectra.rules import first_matching_rule
-
-                matched_rule = first_matching_rule(
-                    category_rules,
-                    clean_name=counterpart or od,
-                    raw_description=od,
-                )
-                if matched_rule:
-                    pre_cat.append(CategorisedTransaction(
-                        id=t.id,
-                        original_description=od,
-                        clean_name=counterpart or od,
-                        category=str(matched_rule["category"]),
-                        amount=t.amount,
-                        currency=t.currency,
-                        date=t.date,
-                    ))
-                    rule_count += 1
-                else:
-                    to_process.append(t)
-
-            if override_count or rule_count:
-                yield evt(
-                    28,
-                    f"Applied local mappings: {override_count} overrides, {rule_count} rules",
-                )
-
-            categorised = list(pre_cat)
-
-            if to_process:
-                flat = [
-                    {
-                        "raw_description": t.raw_description,
-                        "counterpart": getattr(t, "counterpart", ""),
-                        "amount": t.amount,
-                        "currency": t.currency,
-                        "date": t.date,
-                    }
-                    for t in to_process
-                ]
-
-                if settings.ai_provider == "local":
-                    from spectra.local_categorizer import categorise_local
-                    from spectra.ml_classifier import train_classifier
-                    ml_clf = train_classifier(training_data)
-
-                    # Categorise one-by-one so we can stream real progress
-                    results = []
-                    for i, row in enumerate(flat):
-                        pct = 25 + int((i + 1) / len(flat) * 67)
-                        yield evt(pct, f"Categorizing {i + 1} / {len(flat)}...")
-                        await asyncio.sleep(0)
-                        r = categorise_local([row], merchant_db=merchant_db, ml_classifier=ml_clf)
-                        results.extend(r)
-                    categorised.extend(results)
-
-                else:
-                    # Cloud: categorise in one batch (can't stream per-row)
-                    from spectra.ai import categorise
-                    provider = settings.ai_provider
-                    if provider == "gemini":
-                        api_key, model = settings.gemini_api_key, settings.gemini_model
-                    else:
-                        api_key, model = settings.openai_api_key, settings.openai_model
-
-                    # Fake granular progress while waiting for API
-                    for pct in range(30, 88, 5):
-                        yield evt(pct, f"Waiting for {provider.title()} AI...")
-                        await asyncio.sleep(0.4)
-
-                    results = categorise(flat, [], provider=provider,
-                                         api_key=api_key, model=model,
-                                         base_currency=base_currency)
-                    categorised.extend(results)
-
-            # -- Phase 5: recurring detection -----------------------
-            yield evt(94, "Detecting recurring payments...")
-            await asyncio.sleep(0)
-            with _get_db() as db:
-                history = db.get_merchant_history()
-            from spectra.recurring import apply_recurring_tags
-            apply_recurring_tags(categorised, history)
-
-            # -- Phase 6: FX conversion -----------------------------
-            yield evt(97, "Converting currencies...")
-            await asyncio.sleep(0)
-            from spectra.fx import convert_currency
-            for t in categorised:
-                if t.currency.upper() != base_currency:
-                    orig_amt, orig_cur = t.amount, t.currency.upper()
-                    t.amount = convert_currency(orig_amt, orig_cur, base_currency, t.date)
-                    t.original_amount, t.original_currency = orig_amt, orig_cur
-                    t.currency = base_currency
-
-            # -- Done -----------------------------------------------
-            preview = []
-            for t in categorised:
-                row = {
-                    "id": t.id,
-                    "date": t.date,
-                    "merchant": t.clean_name,
-                    "category": t.category,
-                    "amount": t.amount,
-                    "currency": t.currency,
-                    "recurring": t.recurring,
-                    "original_description": t.original_description,
-                }
-                if getattr(t, "classification_source", ""):
-                    row["classification_source"] = t.classification_source
-                if getattr(t, "category_confidence", None) is not None:
-                    row["category_confidence"] = t.category_confidence
-                if getattr(t, "needs_review", False):
-                    row["needs_review"] = True
-                if getattr(t, "category_suggestions", None):
-                    row["category_suggestions"] = [
-                        suggestion.model_dump()
-                        if hasattr(suggestion, "model_dump")
-                        else dict(suggestion)
-                        for suggestion in t.category_suggestions
-                    ]
-                preview.append(row)
-            yield evt(100, f"{len(preview)} transactions ready", done=True,
-                      transactions=preview, message=f"{len(preview)} new transactions")
 
         except Exception as e:
             logger.exception("Upload stream error: %s", e)
@@ -2468,6 +2312,7 @@ async def api_confirm(request: Request):
         cats = []
         future_mappings: dict[str, str] = {}
         future_overrides: dict[str, dict[str, str]] = {}
+        feedback_events: list[dict[str, Any]] = []
         learned_count = 0
         for t in transactions:
             ct = CategorisedTransaction(
@@ -2480,28 +2325,36 @@ async def api_confirm(request: Request):
             cats.append(ct)
 
             apply_to_future = _coerce_bool(t.get("apply_to_future"), True)
-            _persist_learning(
-                db,
-                user_id=user_id,
-                tx_id=str(ct.id),
-                original_description=str(ct.original_description),
-                clean_name=str(ct.clean_name),
-                category=str(ct.category),
-                source="upload_confirm",
-                apply_to_future=apply_to_future,
-            )
-            if apply_to_future and ct.category != UNCATEGORIZED:
-                future_mappings[ct.clean_name] = ct.category
-                if ct.original_description:
-                    future_overrides[ct.original_description] = {
-                        "clean_name": ct.clean_name,
-                        "category": ct.category,
-                    }
-                learned_count += 1
+            name = str(ct.clean_name or "").strip()
+            category = str(ct.category or "").strip()
+            original = str(ct.original_description or "")
+            # Mirror _persist_learning's guard, but collect for a single batched write
+            # instead of one committed round-trip per transaction.
+            if name and category and category != UNCATEGORIZED:
+                feedback_events.append({
+                    "user_id": user_id,
+                    "tx_id": str(ct.id),
+                    "original_description": original,
+                    "clean_name": name,
+                    "category": category,
+                    "source": "upload_confirm",
+                    "apply_to_future": apply_to_future,
+                })
+                if apply_to_future:
+                    future_mappings[name] = category
+                    if original:
+                        future_overrides[original] = {
+                            "clean_name": name,
+                            "category": category,
+                        }
+                    learned_count += 1
 
+        # Batched writes: history + future mappings/overrides + learning feedback,
+        # a handful of round-trips total instead of ~3 per transaction.
         db.save_history(cats)
         db.save_merchant_categories_batch(future_mappings)
         db.save_overrides(future_overrides)
+        db.record_learning_feedback_batch(feedback_events)
 
         # Optionally sync to Google Sheets
         if settings.spreadsheet_id and (settings.google_sheets_credentials_b64 or

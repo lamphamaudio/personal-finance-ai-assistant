@@ -6,8 +6,8 @@ import json
 import logging
 import re
 import unicodedata
-from typing import Any
-
+from typing import Any, Literal, TypedDict
+from langgraph.graph import StateGraph, END
 from fastapi import Request
 
 from spectra.categories import CATEGORIES, normalize_category
@@ -19,6 +19,7 @@ from spectra.chat.prompts import FINALIZER_SYSTEM_PROMPT, SUPERVISOR_SYSTEM_PROM
 from spectra.chat.redaction import redact_payload, redact_text
 from spectra.chat.tools import openai_tool_definitions
 from spectra.config import Settings, load_settings
+from spectra.chat.insight_tools import get_today_in_user_timezone
 
 logger = logging.getLogger("spectra.chat")
 
@@ -43,6 +44,30 @@ _RAW_LONG_IDENTIFIER_RE = re.compile(r"\b\d{10,19}\b")
 _UUID_IN_TEXT_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
+
+
+class SubTask(TypedDict):
+    id: str
+    tool_name: str
+    arguments: dict[str, Any]
+    depends_on: list[str]
+    requires_confirmation: bool
+
+
+class AgentState(TypedDict):
+    message: str
+    session_id: str | None
+    user_id: str
+    scope: Literal["cycle", "90d", "ytd"]
+    debug: bool
+    confirmation_id: str | None
+    confirm: bool | None
+    early_return: bool
+    response: ChatResponse | None
+    execution_plan: list[SubTask] | None
+    tool_results: list[dict[str, Any]]
+    tool_calls: list[ChatToolCallTrace]
+    synthesized_by_llm: bool
 
 
 class MissingOpenAIKeyError(RuntimeError):
@@ -105,96 +130,1034 @@ class ChatSupervisor:
             return response
 
     async def _respond_inner(self, chat_request: ChatRequest) -> ChatResponse:
-        confirmation_response = await self._handle_confirmation_request(chat_request)
-        if confirmation_response:
-            return confirmation_response
-
-        deterministic = self._handle_phase3_category_flow(chat_request)
-        if deterministic:
-            return deterministic
-
-        phase4 = await self._handle_phase4_read_flow(chat_request)
-        if phase4:
-            return phase4
-
-        api_key = self.settings.openai_api_key
-        if not api_key:
-            raise MissingOpenAIKeyError("OPENAI_API_KEY is missing")
-
+        workflow = StateGraph(AgentState)
+        
+        # Add nodes
+        workflow.add_node("input_guard", self._input_guard_node)
+        workflow.add_node("confirmation", self._confirmation_node)
+        workflow.add_node("deterministic", self._deterministic_node)
+        workflow.add_node("fast_path", self._fast_path_node)
+        workflow.add_node("planner", self._planner_node)
+        workflow.add_node("executor", self._executor_node)
+        workflow.add_node("synthesis", self._synthesis_node)
+        workflow.add_node("finalizer", self._finalizer_node)
+        workflow.add_node("output_guard", self._output_guard_node)
+        
+        # Set entry point
+        workflow.set_entry_point("input_guard")
+        
+        # Define routes
+        def route_input_guard(state: AgentState) -> str:
+            if state.get("early_return"):
+                return "output_guard"
+            return "confirmation"
+            
+        def route_confirmation(state: AgentState) -> str:
+            if state.get("early_return"):
+                return "output_guard"
+            return "deterministic"
+            
+        def route_deterministic(state: AgentState) -> str:
+            if state.get("early_return"):
+                return "output_guard"
+            return "fast_path"
+            
+        def route_fast_path(state: AgentState) -> str:
+            if state.get("early_return"):
+                return "output_guard"
+            return "planner"
+            
+        def route_synthesis(state: AgentState) -> str:
+            resp = state.get("response")
+            # The LLM synthesis path already wrote a complete, multi-intent answer;
+            # skip the finalizer's second rewrite (saves one LLM call) and go straight
+            # to the output guard. Only single-tool legacy formatters need finalizing.
+            if state.get("synthesized_by_llm"):
+                return "output_guard"
+            if resp and not resp.requires_confirmation and resp.tool_calls:
+                return "finalizer"
+            return "output_guard"
+            
+        # Add conditional edges
+        workflow.add_conditional_edges("input_guard", route_input_guard)
+        workflow.add_conditional_edges("confirmation", route_confirmation)
+        workflow.add_conditional_edges("deterministic", route_deterministic)
+        workflow.add_conditional_edges("fast_path", route_fast_path)
+        
+        workflow.add_edge("planner", "executor")
+        workflow.add_edge("executor", "synthesis")
+        
+        workflow.add_conditional_edges("synthesis", route_synthesis)
+        workflow.add_edge("finalizer", "output_guard")
+        workflow.add_edge("output_guard", END)
+        
+        # Compile graph
+        graph = workflow.compile()
+        
+        # Run graph
+        initial_state = AgentState(
+            message=chat_request.message,
+            session_id=chat_request.session_id,
+            user_id=self.user_id,
+            scope=chat_request.scope,
+            debug=chat_request.debug,
+            confirmation_id=chat_request.confirmation_id,
+            confirm=chat_request.confirm,
+            early_return=False,
+            response=None,
+            execution_plan=None,
+            tool_results=[],
+            tool_calls=[],
+            synthesized_by_llm=False,
+        )
+        
         try:
-            from spectra.chat.tracing import trace_span
-
-            client = self._make_openai_client(api_key, timeout=30.0)
-            model = self.settings.openai_model or _SAFE_DEFAULT_MODEL
-            messages = [
-                {"role": "system", "content": SUPERVISOR_SYSTEM_PROMPT},
-                {"role": "user", "content": self._build_user_message(chat_request)},
-            ]
-            with trace_span("openai_supervisor", "llm", {"model": model, "messages_count": len(messages)}) as span_rec:
-                first = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    tools=openai_tool_definitions(),
-                    tool_choice="auto",
-                    parallel_tool_calls=False,
-                    temperature=0.2,
-                )
-                assistant_message = first.choices[0].message
-                span_rec.outputs = {
-                    "choices_count": len(first.choices),
-                    "tool_calls": [
-                        {"name": tc.function.name, "arguments": tc.function.arguments}
-                        for tc in (first.choices[0].message.tool_calls or [])
-                    ]
-                }
-            messages.append(assistant_message.model_dump(exclude_none=True))
-            traces: list[ChatToolCallTrace] = []
-
-            tool_calls = list(assistant_message.tool_calls or [])[:1]
-            for tool_call in tool_calls:
-                tool_name = tool_call.function.name
-                arguments = self._parse_arguments(tool_call.function.arguments)
-                result = await self.executor.execute(tool_name, arguments)
-                traces.append(
-                    ChatToolCallTrace(
-                        tool_name=tool_name,
-                        arguments=arguments,
-                        status=result.status,
-                        error=result.error,
-                    )
-                )
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps(result.model_dump(), ensure_ascii=False),
-                    }
-                )
-
-            if tool_calls:
-                with trace_span("openai_supervisor_final", "llm", {"model": model, "messages_count": len(messages)}) as span_rec:
-                    final = client.chat.completions.create(model=model, messages=messages, temperature=0.2)
-                    answer = final.choices[0].message.content or "Xin loi, minh chua the tao cau tra loi."
-                    span_rec.outputs = {"answer": answer}
-            else:
-                answer = assistant_message.content or "Xin loi, minh chua the tao cau tra loi."
-
-            intent = self._infer_intent(chat_request.message, traces)
-            return ChatResponse(
-                answer=answer,
-                intent=intent,
-                tool_calls=traces,
-                debug={"model": model} if chat_request.debug else None,
+            final_state = await graph.ainvoke(initial_state)
+            return final_state.get("response") or ChatResponse(
+                answer="Xin loi, minh chua the hoan thanh yeu cau.",
+                intent=ChatIntent.UNKNOWN
             )
-        except MissingOpenAIKeyError:
-            raise
         except Exception:
-            logger.exception("Chat supervisor failed")
+            logger.exception("LangGraph execution failed")
             return ChatResponse(
                 answer="Xin loi, hien minh chua the xu ly cau hoi nay. Vui long thu lai sau.",
                 intent=ChatIntent.UNKNOWN,
                 tool_calls=[],
             )
+
+    async def _input_guard_node(self, state: AgentState) -> dict[str, Any]:
+        from spectra.chat.guardrails.engine import guardrail_engine
+        early_input = guardrail_engine.check_input(state["message"])
+        if early_input:
+            return {"response": early_input, "early_return": True}
+        return {"early_return": False}
+
+    async def _confirmation_node(self, state: AgentState) -> dict[str, Any]:
+        req = ChatRequest(
+            message=state["message"],
+            session_id=state["session_id"],
+            scope=state["scope"],
+            debug=state["debug"],
+            confirmation_id=state["confirmation_id"],
+            confirm=state["confirm"]
+        )
+        confirmation_response = await self._handle_confirmation_request(req)
+        if confirmation_response:
+            return {"response": confirmation_response, "early_return": True}
+        return {"early_return": False}
+
+    async def _deterministic_node(self, state: AgentState) -> dict[str, Any]:
+        req = ChatRequest(
+            message=state["message"],
+            session_id=state["session_id"],
+            scope=state["scope"],
+            debug=state["debug"],
+            confirmation_id=state["confirmation_id"],
+            confirm=state["confirm"]
+        )
+        deterministic = self._handle_phase3_category_flow(req)
+        if deterministic:
+            return {"response": deterministic, "early_return": True}
+        return {"early_return": False}
+
+    async def _fast_path_node(self, state: AgentState) -> dict[str, Any]:
+        req = ChatRequest(
+            message=state["message"],
+            session_id=state["session_id"],
+            scope=state["scope"],
+            debug=state["debug"],
+            confirmation_id=state["confirmation_id"],
+            confirm=state["confirm"]
+        )
+        normalized = self._fold(state["message"])
+
+        # "lên kế hoạch ngân sách" is a single budget-planning intent even though the message also
+        # contains "tiết kiệm" + "thu nhập", which would falsely trigger _is_multi_intent.
+        # Intercept it deterministically before the multi-intent gate.
+        if "ngan sach" in normalized and any(t in normalized for t in ["len ke hoach", "ke hoach ngan sach", "lap ke hoach"]):
+            budget_resp = await self._handle_phase7_budget_flow(req, normalized)
+            if budget_resp:
+                return {"response": budget_resp, "early_return": True}
+
+        # A compound, multi-intent question must not be answered by a single
+        # deterministic handler (which would address only one part). Send it to the
+        # planner so it can be decomposed into several tool calls and synthesized.
+        if self._is_multi_intent(state["message"], normalized):
+            return {"execution_plan": None}
+        phase4_resp = await self._handle_phase4_read_flow(req)
+        if phase4_resp:
+            return {"response": phase4_resp, "early_return": True}
+        return {"execution_plan": None}
+
+    def _build_clarification_response(
+        self, question: str, suggestions: list[dict[str, str]] | None = None
+    ) -> ChatResponse:
+        """Build a clarification response: a short question plus clickable suggestion chips.
+
+        Each suggestion chip carries an `arguments.message` so the frontend re-sends it as the
+        user's next message (see ChatPanel SuggestedActions onSend handling).
+        """
+        actions: list[SuggestedAction] = []
+        for item in (suggestions or [])[:4]:
+            label = str(item.get("label") or "").strip()
+            if not label:
+                continue
+            message = str(item.get("message") or label).strip()
+            actions.append(
+                SuggestedAction(label=label, type="prompt", arguments={"message": message})
+            )
+        return ChatResponse(
+            answer=question,
+            intent=ChatIntent.CLARIFICATION_NEEDED,
+            suggested_actions=actions,
+        )
+
+    def _clarification_for_missing_data(
+        self, tool_name: str, data: dict[str, Any], message: str
+    ) -> ChatResponse | None:
+        """Reactive clarification: a planning tool ran but reported a blocking data gap.
+
+        Returns a clarification response when the missing field makes the result unusable,
+        otherwise None so the normal formatter runs.
+        """
+        _PLANNING_TOOLS = {
+            "recommend_budget_plan",
+            "plan_savings_goal",
+            "get_budget_status",
+            "simulate_budget_adjustment",
+        }
+        if tool_name not in _PLANNING_TOOLS or not isinstance(data, dict):
+            return None
+        missing = {str(item) for item in (data.get("missing_data") or [])}
+        if "income" in missing:
+            return self._build_clarification_response(
+                "Để tính chính xác mình cần biết thu nhập hàng tháng của bạn khoảng bao nhiêu?",
+                [
+                    {"label": "Khoảng 15 triệu", "message": "thu nhập của tôi khoảng 15 triệu/tháng"},
+                    {"label": "Khoảng 20 triệu", "message": "thu nhập của tôi khoảng 20 triệu/tháng"},
+                    {
+                        "label": "Ước lượng từ lịch sử giao dịch của tôi",
+                        "message": "hãy ước lượng thu nhập của tôi từ lịch sử giao dịch",
+                    },
+                ],
+            )
+        if "budget_limits" in missing:
+            return self._build_clarification_response(
+                "Bạn chưa đặt hạn mức ngân sách nào. Bạn muốn mình đề xuất hạn mức hay bạn tự đặt?",
+                [
+                    {"label": "Đề xuất ngân sách cho tôi", "message": "hãy đề xuất ngân sách cho tôi"},
+                    {"label": "Tôi tự đặt hạn mức", "message": "tôi muốn tự đặt hạn mức ngân sách"},
+                ],
+            )
+        return None
+
+    @staticmethod
+    def _missing_required_field(error: str | None) -> str | None:
+        """Extract the missing field name from a jsonschema 'required property' error."""
+        if not error:
+            return None
+        match = re.search(r"'([^']+)' is a required property", error)
+        return match.group(1) if match else None
+
+    async def _planner_node(self, state: AgentState) -> dict[str, Any]:
+        if state["execution_plan"] is not None:
+            return {}
+
+        api_key = self.settings.openai_api_key
+        if not api_key:
+            raise MissingOpenAIKeyError("OPENAI_API_KEY is missing")
+
+        req = ChatRequest(
+            message=state["message"],
+            session_id=state["session_id"],
+            scope=state["scope"],
+            debug=state["debug"]
+        )
+
+        client = self._make_openai_client(api_key, timeout=30.0)
+        model = self.settings.openai_model or _SAFE_DEFAULT_MODEL
+
+        planner_instructions = """
+You are Personal Finance AI Assistant v3. Your task is to analyze the user's Vietnamese query and construct a structured Execution Plan to answer it using the available tools.
+
+You have access to the following 38 tools:
+1. get_current_user: Return the authenticated user context.
+2. get_account_summary: Return aggregate spending, income, category, and merchant summary (takes scope, and optional date_from, date_to).
+3. get_transactions: Return transaction rows (takes page, per_page, category, uncategorized_only, search, date_from, date_to).
+4. get_category_options: Return transaction category options.
+5. update_transaction_category: Update a transaction category (requires confirmation) (takes tx_id, category, and optional apply_to_future).
+6. test_category_rule: Preview whether a category rule matches (takes pattern, and optional rule_type, sample_text).
+7. create_category_rule: Create a category memory rule (requires confirmation) (takes pattern, category, and optional rule_type).
+8. get_category_rules: Return active category rules.
+9. get_learning_summary: Return category learning summary.
+10. get_anomalies: Return unusual/suspicious financial activities (takes optional limit, scope).
+11. explain_anomaly: Explain why a specific anomaly is unusual (takes anomaly_id).
+12. get_balance_forecast: Return end-of-month forecast and spending trend (takes optional scope).
+13. get_financial_health_score: Return cashflow and budgeting health score (takes optional scope, month).
+14. plan_savings_goal: Calculate savings goal feasibility (takes name, target_amount, current_amount, target_date).
+15. simulate_savings_adjustment: Simulate spending reduction to reach goal (takes target_amount, current_amount, target_date, adjustments).
+16. get_savings_goals: Return active/archived/completed saving goals (takes optional status).
+17. create_savings_goal: Create a saving goal (requires confirmation) (takes name, target_amount, current_amount, target_date).
+18. update_savings_goal: Update a saving goal (requires confirmation) (takes goal_id, and optional name, target_amount, current_amount, target_date, status).
+19. archive_savings_goal: Archive a saving goal (requires confirmation) (takes goal_id).
+20. get_budget_status: Return budget limits, actuals, remaining, and overrun risks (takes optional scope).
+21. recommend_budget_plan: Recommend a category-level budget plan (takes optional scope, goal_id, target_savings_amount, monthly_income).
+22. simulate_budget_adjustment: Simulate impact of custom budget limit changes (takes adjustments, and optional scope, goal_id).
+23. compare_budget_vs_actual: Compare actual spending with budget limits (takes optional scope).
+24. update_budget_limit: Update a category budget limit (requires confirmation) (takes category, limit).
+25. upsert_budget_plan: Create or update multiple budget limits (requires confirmation) (takes budgets).
+26. get_recurring_transactions: Return subscription/recurring payment info (takes optional scope, limit).
+27. compare_period_spending: Compare spending/income between periods or months (takes optional period_a_from, period_a_to, period_b_from, period_b_to).
+28. explain_budget_overrun: Explain overrun categories and transactions (takes optional scope, category).
+29. get_cashflow_calendar: Return daily cashflow projection calendar (takes optional days).
+30. simulate_purchase_impact: Simulate a future purchase impact on budget/forecast (takes amount, and optional category, purchase_date, scope).
+31. get_debt_summary: Infer debt-like payments from transactions (takes optional scope).
+32. get_emergency_fund_status: Estimate emergency fund coverage months (takes optional months_target).
+33. simulate_income_change: Simulate the impact of a monthly income increase or decrease on surplus, savings rate, and goal feasibility (takes income_delta in VND, and optional scope). Use for "nếu tăng/giảm lương X thì sao", "nếu thu nhập thêm Xtr".
+34. get_spending_patterns: Analyze historical spending patterns grouped by weekday, day of month, or week of month (takes optional scope, group_by). Use for "cuối tuần hay ngày thường", "ngày nào tiêu nhiều nhất", "tuần nào tiêu nhiều nhất".
+35. get_conversation_context: Return conversation history context (takes session_id).
+36. get_user_memories: Return saved user memories (takes optional memory_types).
+37. remember_user_preference: Remember a preference (requires confirmation) (takes key, value, reason, and optional memory_type).
+38. forget_user_memory: Delete a preference (requires confirmation) (takes memory_id).
+39. get_peer_benchmark: Compare the user's needs/wants/savings allocation against reference benchmarks (50/30/20 and income-bracket norms) (takes optional scope, monthly_income_override). Use for peer/social comparison: "so sánh với người cùng tuổi/cùng địa vị xã hội", "chi tiêu của tôi đã hợp lý chưa", "người có lương X thường chi bao nhiêu". Does NOT use other users' real data.
+
+Write Tools:
+The following tools are write tools and change settings, budgets, or goals. They ALWAYS require explicit confirmation before execution:
+- update_transaction_category
+- create_category_rule
+- create_savings_goal
+- update_savings_goal
+- archive_savings_goal
+- update_budget_limit
+- upsert_budget_plan
+- remember_user_preference
+- forget_user_memory
+
+You MUST return a JSON object with this exact structure:
+{
+  "thought": "Your reasoning in Vietnamese",
+  "plan": [
+    {
+      "id": "1",
+      "tool_name": "name_of_tool",
+      "arguments": { ... },
+      "depends_on": [],
+      "requires_confirmation": false
+    }
+  ],
+  "direct_response": "Your Vietnamese response here if no tools are needed, otherwise null",
+  "clarification": null
+}
+
+CLARIFICATION RULE (ask back instead of guessing):
+- Only when guessing would likely produce a WRONG or USELESS answer, set "clarification" to an object and leave "plan" empty + "direct_response" null:
+  { "clarification": { "question": "<câu hỏi ngắn tiếng Việt>", "suggestions": [ {"label": "<nhãn nút>", "message": "<câu user sẽ gửi khi bấm>"}, ... ] } }
+- Provide 2-4 concrete suggestions. If a reasonable default exists, DO NOT ask — just run the tools.
+- Apply in these cases:
+  1. A REQUIRED argument for the needed tool is missing and cannot be inferred. Example: "tạo mục tiêu tiết kiệm" but no số tiền or thời hạn → hỏi mục tiêu cần bao nhiêu và trong bao lâu (gợi ý ví dụ "20 triệu trong 6 tháng").
+  2. The request is too VAGUE/BROAD to map to a specific analysis. Example: "giúp tôi quản lý tài chính", "tôi nên làm gì với tiền của mình" → hỏi muốn xem mảng nào, gợi ý: "Xem tổng quan chi tiêu", "Đánh giá sức khỏe tài chính", "Lập kế hoạch ngân sách".
+  3. The TIME PERIOD is genuinely unspecified AND the question is sensitive to it. Example: "tôi chi tiêu nhiều không?" with no time hint → gợi ý: "Tháng này", "90 ngày gần đây", "Từ đầu năm". BUT if the message already contains a time signal ("tháng này", "6 tháng", "tuần này", a concrete date), DO NOT ask — proceed with the matching date window.
+- If a write tool requires confirmation, NEVER use clarification; the confirmation flow handles it.
+
+MULTI-INTENT DECOMPOSITION (IMPORTANT):
+- A single Vietnamese message often contains SEVERAL sub-questions joined by words like "và", "rồi", "đồng thời", "với lại", "ngoài ra", "còn", or multiple "?".
+- Break the message into its sub-questions and create ONE task per sub-question, preserving the user's order. Do NOT answer only the first part.
+- Pick the most specific tool for each sub-question. If one sub-question needs the result of another, use "depends_on" and reference it with "$id.field_name".
+- Worked example 1 — message: "6 tháng gần nhất tôi chi tiêu bao nhiêu, và với lương 18tr thì 5 năm tôi muốn để dành 500tr thì mỗi tháng cần đưa bao nhiêu vào tài khoản?"
+  Decompose into two tasks:
+    {"id":"1","tool_name":"get_account_summary","arguments":{"date_from":"<first day 6 months ago>","date_to":"<first day of next month>"},"depends_on":[],"requires_confirmation":false}
+    {"id":"2","tool_name":"plan_savings_goal","arguments":{"name":"Mục tiêu tiết kiệm","target_amount":500000000,"current_amount":0,"target_date":"<today + 5 years>"},"depends_on":[],"requires_confirmation":false}
+  (The synthesis step will then combine both results into one answer.)
+- Worked example 2 — message: "Tháng này tôi tiêu nhiều nhất vào đâu và cuối tháng tôi còn lại bao nhiêu?"
+  Decompose into two tasks:
+    {"id":"1","tool_name":"get_account_summary","arguments":{"date_from":"<first day of current month>","date_to":"<first day of next month>"},"depends_on":[],"requires_confirmation":false}
+    {"id":"2","tool_name":"get_balance_forecast","arguments":{"scope":"current_month"},"depends_on":[],"requires_confirmation":false}
+- Worked example 3 — message: "6 tháng gần nhất tôi chi tiêu bao nhiêu và tài chính của tôi hiện tại có ổn không?"
+  Decompose into two tasks:
+    {"id":"1","tool_name":"get_account_summary","arguments":{"date_from":"<first day 6 months ago>","date_to":"<first day of next month>"},"depends_on":[],"requires_confirmation":false}
+    {"id":"2","tool_name":"get_financial_health_score","arguments":{},"depends_on":[],"requires_confirmation":false}
+
+SPENDING SUMMARY vs COMPARISON — never confuse these:
+- "N tháng gần nhất/gần đây tôi chi tiêu bao nhiêu?" = SUMMARY of ONE date window → use `get_account_summary` with date_from/date_to covering that window.
+  Example: "6 tháng gần nhất" → date_from = <first day 6 months ago>, date_to = <first day of next month>.
+- "So sánh tháng này với tháng trước", "chi tiêu có tăng không?", "khác gì tháng trước?" = COMPARE two distinct periods → use `compare_period_spending`.
+- RULE: `compare_period_spending` is ONLY for comparing TWO periods against each other. A single time-range spending query ALWAYS uses `get_account_summary`. When in doubt, default to `get_account_summary`.
+
+PEER COMPARISON (không phải period comparison):
+- Khi user hỏi "so sánh với người cùng tuổi", "người có lương X thường chi bao nhiêu", "cùng địa vị xã hội",
+  "mức trung bình xã hội", "chi tiêu của tôi đã hợp lý chưa", "tôi tiêu nhiều hơn người khác không" → get_peer_benchmark.
+- KHÔNG dùng compare_period_spending cho peer comparison. Đó là so sánh 2 kỳ thời gian, hoàn toàn khác.
+- get_peer_benchmark so cơ cấu chi tiêu (needs/wants/savings) của user với chuẩn 50/30/20 và mức kỳ vọng theo nhóm thu nhập.
+  LƯU Ý: đây là chuẩn tham chiếu chung, KHÔNG phải dữ liệu người dùng thật — khi tổng hợp câu trả lời hãy nói rõ điều này.
+- Ví dụ: "So với người cùng độ tuổi thì chi tiêu của tôi đã hợp lý chưa?" → get_peer_benchmark()
+
+PURCHASE FEASIBILITY — "có thể mua X không?", "nên mua X không?":
+- Khi user hỏi "có thể mua X [số tiền] không?", "nên mua X không?", "mua X [số tiền] có ổn không?" → simulate_purchase_impact(amount=X).
+- Ví dụ: "Tôi có thể mua iPhone 25 triệu vào tuần sau không?" → simulate_purchase_impact(amount=25000000, category="Điện tử")
+- KHÔNG dùng get_account_summary hoặc get_cashflow_calendar thay thế — chúng không trả lời được câu hỏi "có thể mua được không".
+- Nếu user tiếp tục hỏi "nếu không thì cần cắt ở đâu?" → thêm task explain_budget_overrun hoặc get_budget_status.
+
+SPENDING REDUCTION BY PERCENTAGE — "giảm X% chi tiêu", "cắt X%":
+- Khi user hỏi "muốn giảm chi tiêu X%", "cắt X% chi tiêu", "giảm xuống còn X%" → cần 2 bước:
+  Bước 1: get_account_summary() để lấy top categories và tổng chi tiêu.
+  Bước 2: simulate_budget_adjustment với adjustments dựa trên top categories, mỗi mục giảm tương ứng X%.
+- Ví dụ — "Tôi muốn giảm chi tiêu xuống 20%, cần cắt ở những mục nào?":
+  Task 1: {"id":"1","tool_name":"get_account_summary","arguments":{},"depends_on":[]}
+  Task 2: {"id":"2","tool_name":"simulate_budget_adjustment","arguments":{"adjustments":[{"category":"Ăn uống","limit":2560000},{"category":"Mua sắm","limit":1920000}]},"depends_on":["1"]}
+- KHÔNG để "direct_response" mà không gọi tool — user cần con số cụ thể từ dữ liệu của họ.
+
+SAVINGS RATE QUESTIONS — "bao nhiêu % thu nhập", "tiết kiệm X% thu nhập":
+- "Muốn tiết kiệm 100tr trong 2 năm, cần bao nhiêu % thu nhập?" →
+    Task 1: plan_savings_goal(name=..., target_amount=100000000, target_date=...)
+    Task 2: get_account_summary() để lấy monthly_income
+    Tổng hợp: savings_pct = monthly_required / monthly_income × 100
+- "Nếu muốn tiết kiệm 30% thu nhập, lên kế hoạch ngân sách" (không có income cụ thể) →
+    Task 1: get_account_summary() để lấy monthly_income từ lịch sử
+    Task 2: recommend_budget_plan với target_savings_amount ước tính (income × pct, ví dụ 15tr × 30% = 4500000)
+    Ví dụ: {"id":"1","tool_name":"get_account_summary","arguments":{},"depends_on":[]}
+            {"id":"2","tool_name":"recommend_budget_plan","arguments":{"target_savings_amount":4500000},"depends_on":["1"]}
+- KHÔNG gọi get_current_user cho câu hỏi tiết kiệm % — get_current_user chỉ trả về thông tin tài khoản, không giúp tính ngân sách.
+- KHÔNG trả lời "direct_response" không có tool — cần dữ liệu thực của user.
+
+SAVINGS TO BUY — "tiết kiệm để mua", "lên lịch tiết kiệm", "để dành mua", "bao lâu thì mua được":
+- Khi user hỏi "cần bao lâu/bao nhiêu tháng để tiết kiệm đủ mua X", "lên lịch tiết kiệm trong X tháng để mua",
+  "để dành X tháng mua được không", "mỗi tháng cần để ra bao nhiêu để mua X"
+  → dùng plan_savings_goal(name="Mua <X>", target_amount=<giá X>, current_amount=0, target_date=<hôm nay + thời gian>)
+- KHÔNG dùng simulate_purchase_impact — tool đó chỉ mô phỏng mua NGAY, không phải kế hoạch tiết kiệm tương lai.
+- Nếu user refer tới món hàng/số tiền từ tin nhắn trước bằng đại từ ("mua được", "cái đó", "nó", "món đó"),
+  lấy target_amount từ ngữ cảnh hội thoại (context). KHÔNG tự bóc số từ chuỗi "X tháng" làm amount.
+- Ví dụ — "bạn có thể lên lịch tiết kiệm cho tôi trong 5 tháng để tôi mua được không" (context: laptop 30tr):
+  {"id":"1","tool_name":"plan_savings_goal","arguments":{"name":"Mua laptop","target_amount":30000000,"current_amount":0,"target_date":"<hôm nay + 5 tháng>"},"depends_on":[]}
+- PHÂN BIỆT rõ:
+  • "Tôi có thể mua X ngay bây giờ không?" → simulate_purchase_impact
+  • "Tôi cần tiết kiệm bao lâu/bao nhiêu để mua X?" → plan_savings_goal
+
+ADVICE FOR A SPECIFIC CATEGORY — "lời khuyên cắt giảm [danh mục]":
+- "Lời khuyên để cắt giảm chi phí ăn uống", "làm sao để tốn ít tiền ăn uống hơn" →
+  explain_budget_overrun(category="ăn uống") HOẶC recommend_budget_plan.
+- TUYỆT ĐỐI KHÔNG dùng get_recurring_transactions cho câu hỏi "lời khuyên" — đó chỉ dành cho câu hỏi về khoản cố định/subscription.
+  get_recurring_transactions chỉ phù hợp khi user hỏi: "khoản định kỳ nào", "subscription nào", "tôi có khoản nào tự động trừ không".
+- Ví dụ — "Cho tôi lời khuyên để cắt giảm chi phí ăn uống hàng tháng":
+  {"id":"1","tool_name":"explain_budget_overrun","arguments":{"category":"ăn uống"},"depends_on":[]}
+
+GOAL OPERATIONS (archive / update / view a specific goal):
+- When the user asks for COMPLETED or ACHIEVED goals (e.g. "mục tiêu đã hoàn thành", "goal nào đã đạt", "lịch sử mục tiêu"):
+  → Use get_savings_goals with {"status": "completed"}.
+- When the user asks for ARCHIVED goals (e.g. "mục tiêu đã hủy", "đã lưu trữ"):
+  → Use get_savings_goals with {"status": "archived"}.
+- When the user says "hủy nó", "hủy mục tiêu đó", "xóa goal đó", "cập nhật nó", etc. and the goal_id is NOT explicitly stated:
+  → Create a 2-step plan:
+    Step 1: {"id":"1","tool_name":"get_savings_goals","arguments":{},"depends_on":[],"requires_confirmation":false}
+    Step 2 (archive): {"id":"2","tool_name":"archive_savings_goal","arguments":{"goal_id":"$1.goals.0.id","goal_name":"$1.goals.0.name"},"depends_on":["1"],"requires_confirmation":true}
+    Step 2 (update):  {"id":"2","tool_name":"update_savings_goal","arguments":{"goal_id":"$1.goals.0.id","goal_name":"$1.goals.0.name", ...other fields...},"depends_on":["1"],"requires_confirmation":true}
+  The "$1.goals.0.id" and "$1.goals.0.name" references are resolved automatically at runtime.
+- NEVER fabricate a goal_id like "1", "current_goal_id", "goal_1", or any made-up string. Always use the $ref or an ID the user explicitly states.
+
+CONFIRMATION PLANS (requires_confirmation: true):
+- If ANY task in your plan has "requires_confirmation": true, you MUST set "direct_response": null.
+- The system handles the confirmation message automatically — do NOT manually ask "Bạn có chắc chắn không?" in direct_response alongside a write plan, or you will create an infinite confirmation loop.
+
+INCOME vs SAVINGS (do not confuse):
+- "lương", "thu nhập", "kiếm được", "nhận về" + an amount (e.g. "lương 8tr") = the user's MONTHLY INCOME → pass it as "monthly_income" (8tr = 8000000) to recommend_budget_plan.
+- "tiết kiệm", "để dành", "để ra", "muốn dành" + an amount = a SAVINGS target → pass it as "target_savings_amount".
+- Never put a salary/income amount into "target_savings_amount".
+
+NO-TOOL RULE (avoid fabricating):
+- If a sub-question is general financial knowledge or advice that does NOT need the user's personal data (e.g. "quỹ khẩn cấp nên bằng mấy tháng chi tiêu?", "nguyên tắc 50/30/20 là gì?"), answer it from general knowledge in "direct_response" (when it is the only intent) or rely on synthesis for the compound case — no tool needed.
+- If a sub-question NEEDS the user's personal financial numbers but NO tool fits, do NOT invent any number. Create no task for it; the synthesis step will state that part is not supported yet.
+
+Plan construction rules:
+- If a task depends on the output of a previous task (e.g. task "2" depends on task "1"), add the ID of the dependency to "depends_on" (e.g., ["1"]). In "arguments", refer to the dependency results using the reference syntax "$id" or "$id.field_name" (e.g., "$1" or "$1.tx_id").
+- For write tools, always set "requires_confirmation": true.
+- If the user query is a general conversation, explanation, or greeting that does not need database access or financial calculation, set "plan" to [] and write your response in "direct_response".
+- Respond in Vietnamese.
+"""
+        messages = [
+            {"role": "system", "content": SUPERVISOR_SYSTEM_PROMPT + "\n\n" + planner_instructions},
+            {"role": "user", "content": self._build_user_message(req)},
+        ]
+
+        from spectra.chat.tracing import trace_span
+        with trace_span("openai_planner", "llm", {"model": model, "messages_count": len(messages)}) as span_rec:
+            res = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                response_format={"type": "json_object"},
+                temperature=0.2,
+            )
+            content = res.choices[0].message.content or "{}"
+            span_rec.outputs = {"content": content}
+
+        try:
+            plan_data = json.loads(content)
+        except Exception:
+            plan_data = {}
+
+        direct_response = plan_data.get("direct_response")
+        raw_plan_data = plan_data.get("plan") or []
+        has_confirmation_tasks = any(t.get("requires_confirmation") for t in raw_plan_data)
+
+        # Clarification takes priority: the planner decided it needs more info from the user
+        # before any tool can run. Mirror the direct_response short-circuit path.
+        clarification = plan_data.get("clarification")
+        if (
+            isinstance(clarification, dict)
+            and str(clarification.get("question") or "").strip()
+            and not has_confirmation_tasks
+        ):
+            resp = self._build_clarification_response(
+                str(clarification["question"]).strip(),
+                clarification.get("suggestions") or [],
+            )
+            return {"execution_plan": [], "response": resp, "early_return": True}
+
+        if direct_response and not has_confirmation_tasks:
+            resp = ChatResponse(
+                answer=direct_response,
+                intent=ChatIntent.UNKNOWN
+            )
+            return {"execution_plan": [], "response": resp, "early_return": True}
+
+        raw_plan = plan_data.get("plan", [])
+        plan = []
+        for task in raw_plan:
+            plan.append(
+                SubTask(
+                    id=str(task.get("id", "")),
+                    tool_name=str(task.get("tool_name", "")),
+                    arguments=dict(task.get("arguments", {})),
+                    depends_on=[str(d) for d in task.get("depends_on", [])],
+                    requires_confirmation=bool(task.get("requires_confirmation", False))
+                )
+            )
+        return {"execution_plan": plan}
+
+    async def _executor_node(self, state: AgentState) -> dict[str, Any]:
+        plan = state["execution_plan"]
+        if not plan:
+            return {}
+
+        completed_tasks = {}
+        tool_results = list(state["tool_results"])
+        tool_calls = list(state["tool_calls"])
+
+        max_waves = 10
+        for _ in range(max_waves):
+            ready_tasks = []
+            for task in plan:
+                task_id = task["id"]
+                if task_id in completed_tasks:
+                    continue
+                if task.get("requires_confirmation"):
+                    continue
+                
+                # Check dependencies
+                deps_satisfied = True
+                for dep_id in task.get("depends_on", []):
+                    if dep_id not in completed_tasks:
+                        deps_satisfied = False
+                        break
+                    dep_res = completed_tasks[dep_id]
+                    if dep_res.status != "success":
+                        deps_satisfied = False
+                        break
+                
+                if deps_satisfied:
+                    ready_tasks.append(task)
+            
+            if not ready_tasks:
+                break
+            
+            # Resolve references
+            for task in ready_tasks:
+                task["arguments"] = self._resolve_refs(task["arguments"], completed_tasks)
+            
+            # Execute tasks
+            async def run_task(t: SubTask):
+                result = await self.executor.execute(t["tool_name"], t["arguments"], session_id=state["session_id"])
+                return t["id"], result
+            
+            import asyncio
+            results = await asyncio.gather(*[run_task(t) for t in ready_tasks])
+            
+            for task_id, result in results:
+                completed_tasks[task_id] = result
+                tool_results.append(result.model_dump())
+                
+                resolved_args = next(t["arguments"] for t in ready_tasks if t["id"] == task_id)
+                tool_calls.append(
+                    ChatToolCallTrace(
+                        tool_name=result.tool_name,
+                        arguments=resolved_args,
+                        status=result.status,
+                        error=result.error
+                    )
+                )
+                
+        # Resolve references for skipped write tools
+        for task in plan:
+            if task.get("requires_confirmation") and task["id"] not in completed_tasks:
+                task["arguments"] = self._resolve_refs(task["arguments"], completed_tasks)
+                
+        return {
+            "execution_plan": plan,
+            "tool_results": tool_results,
+            "tool_calls": tool_calls
+        }
+
+    @staticmethod
+    def _deep_get(data: Any, path: str) -> Any:
+        """Navigate nested dicts/lists using dot-notation; integer segments are list indices."""
+        if data is None:
+            return None
+        head, _, tail = path.partition(".")
+        try:
+            idx = int(head)
+            val = data[idx] if isinstance(data, list) and 0 <= idx < len(data) else None
+        except ValueError:
+            val = data.get(head) if isinstance(data, dict) else None
+        return ChatSupervisor._deep_get(val, tail) if tail else val
+
+    def _resolve_refs(self, args: Any, completed_tasks: dict[str, Any]) -> Any:
+        if isinstance(args, dict):
+            return {k: self._resolve_refs(v, completed_tasks) for k, v in args.items()}
+        elif isinstance(args, list):
+            return [self._resolve_refs(v, completed_tasks) for v in args]
+        elif isinstance(args, str):
+            if args.startswith("$"):
+                parts = args[1:].split(".", 1)
+                ref_id = parts[0]
+                if ref_id in completed_tasks:
+                    task_res = completed_tasks[ref_id]
+                    data = task_res.data
+                    if len(parts) > 1:
+                        return self._deep_get(data, parts[1])
+                    return data
+            elif args.startswith("{{") and args.endswith("}}"):
+                expr = args[2:-2].strip()
+                parts = expr.split(".", 1)
+                ref_id = parts[0]
+                if ref_id in completed_tasks:
+                    task_res = completed_tasks[ref_id]
+                    data = task_res.data
+                    if len(parts) > 1:
+                        return self._deep_get(data, parts[1])
+                    return data
+        return args
+
+    async def _synthesis_node(self, state: AgentState) -> dict[str, Any]:
+        plan = state["execution_plan"]
+        tool_results = state["tool_results"]
+        tool_calls = state["tool_calls"]
+        
+        # 1. Check for pending write confirmations
+        if plan:
+            for task in plan:
+                if task.get("requires_confirmation"):
+                    confirmation_resp = self._build_confirmation_response(task)
+                    return {"response": confirmation_resp}
+
+        # 2. Check if we already have a response (e.g. from planner direct_response)
+        if plan is not None and len(plan) == 0:
+            if state["response"]:
+                return {}
+
+        # 3. Check if single tool with legacy formatter
+        if plan and len(plan) == 1 and not plan[0].get("requires_confirmation"):
+            task = plan[0]
+            result_dict = next((res for res in tool_results if res["tool_name"] == task["tool_name"]), None)
+            if result_dict:
+                status = result_dict.get("status")
+                data = result_dict.get("data") or {}
+                error = result_dict.get("error")
+                
+                if status == "success":
+                    answer = None
+                    intent = ChatIntent.UNKNOWN
+
+                    # Reactive clarification: a planning tool ran but is missing blocking data
+                    # (e.g. income / budget limits). Ask the user instead of returning a
+                    # guessed, unusable answer.
+                    missing_resp = self._clarification_for_missing_data(
+                        task["tool_name"], data if isinstance(data, dict) else {}, state["message"]
+                    )
+                    if missing_resp is not None:
+                        missing_resp.tool_calls = tool_calls
+                        return {"response": missing_resp}
+
+                    if task["tool_name"] == "get_financial_health_score":
+                        answer = self._format_financial_health_answer(data)
+                        intent = ChatIntent.FINANCIAL_HEALTH_SCORE
+                    elif task["tool_name"] == "get_anomalies":
+                        answer = self._format_anomaly_answer(data)
+                        intent = ChatIntent.ANOMALY_EXPLANATION
+                    elif task["tool_name"] == "get_balance_forecast":
+                        if self._is_current_balance_question(self._fold(state["message"])):
+                            answer = self._format_current_balance_answer(data)
+                        else:
+                            answer = self._format_forecast_answer(data)
+                        intent = ChatIntent.FORECAST_BALANCE
+                    elif task["tool_name"] == "explain_budget_overrun":
+                        answer = self._format_budget_overrun_explanation(data)
+                        intent = ChatIntent.SAVING_SUGGESTION
+                    elif task["tool_name"] == "simulate_purchase_impact":
+                        answer = self._format_purchase_impact_answer(data)
+                        intent = ChatIntent.SAVING_SUGGESTION
+                    elif task["tool_name"] == "get_emergency_fund_status":
+                        answer = self._format_emergency_fund_answer(data)
+                        intent = ChatIntent.SAVING_SUGGESTION
+                    elif task["tool_name"] == "get_debt_summary":
+                        answer = self._format_debt_summary_answer(data)
+                        intent = ChatIntent.SAVING_SUGGESTION
+                    elif task["tool_name"] == "get_recurring_transactions":
+                        answer = self._format_recurring_answer(data)
+                        intent = ChatIntent.SPENDING_BREAKDOWN
+                    elif task["tool_name"] == "compare_period_spending":
+                        answer = self._format_period_comparison_answer(data)
+                        intent = ChatIntent.SPENDING_BREAKDOWN
+                    elif task["tool_name"] == "get_cashflow_calendar":
+                        answer = self._format_cashflow_calendar_answer(data)
+                        intent = ChatIntent.FORECAST_BALANCE
+                    elif task["tool_name"] == "get_account_summary":
+                        answer = self._format_account_summary_answer(data)
+                        intent = ChatIntent.SPENDING_BREAKDOWN
+                    elif task["tool_name"] in ("compare_budget_vs_actual", "get_budget_status"):
+                        answer = self._format_budget_status_answer(data)
+                        intent = ChatIntent.SAVING_SUGGESTION
+                    elif task["tool_name"] == "recommend_budget_plan":
+                        answer = self._format_budget_recommendation_answer(data)
+                        intent = ChatIntent.SAVING_SUGGESTION
+                        if isinstance(data, dict):
+                            budgets = [
+                                {"category": item.get("category"), "limit": item.get("recommended_budget")}
+                                for item in list(data.get("recommended_budgets") or [])[:20]
+                            ]
+                            self._set_last_budget_plan(budgets)
+                    elif task["tool_name"] == "get_savings_goals":
+                        answer = self._format_savings_goals_answer(data)
+                        intent = ChatIntent.SAVING_SUGGESTION
+                    elif task["tool_name"] == "simulate_savings_adjustment":
+                        answer = self._format_savings_simulation_answer(data)
+                        intent = ChatIntent.SAVING_SUGGESTION
+                    elif task["tool_name"] == "plan_savings_goal":
+                        answer = self._format_savings_plan_answer(data)
+                        intent = ChatIntent.SAVING_SUGGESTION
+                        self._set_last_savings_plan(dict(task["arguments"]))
+
+                    if answer:
+                        resp = ChatResponse(
+                            answer=answer,
+                            intent=intent,
+                            tool_calls=tool_calls,
+                            debug={"model": "fast_path"} if state["debug"] else None
+                        )
+                        return {"response": resp}
+                else:
+                    # Defensive clarification: the tool was rejected because a required
+                    # argument was missing. Ask the user for it in plain language instead of
+                    # surfacing the raw schema validation error.
+                    field = self._missing_required_field(error)
+                    if status == "rejected" and field:
+                        resp = self._build_clarification_response(
+                            f"Mình cần thêm thông tin để trả lời: bạn cho mình biết **{field}** nhé."
+                        )
+                        resp.tool_calls = tool_calls
+                        return {"response": resp}
+                    resp = ChatResponse(
+                        answer=f"Minh chua thuc hien duoc. Loi: {error or 'Unknown error'}",
+                        intent=ChatIntent.UNKNOWN,
+                        tool_calls=tool_calls
+                    )
+                    return {"response": resp}
+
+        # 4. LLM Synthesis
+        api_key = self.settings.openai_api_key
+        if not api_key:
+            raise MissingOpenAIKeyError("OPENAI_API_KEY is missing")
+
+        client = self._make_openai_client(api_key, timeout=30.0)
+        model = self.settings.openai_model or _SAFE_DEFAULT_MODEL
+
+        # Keep synthesis prompt minimal — no supervisor/planner instructions that tell
+        # the model to select or call tools. The tools have already been executed; the
+        # only job here is to write the answer from the returned data.
+        system_content = (
+            "You are a Vietnamese personal finance answer writer.\n"
+            "The tools have ALREADY been executed. Their results are provided in the user message.\n"
+            "DO NOT suggest calling more tools. DO NOT say 'I will check' or 'let me look'. "
+            "ONLY write the final answer directly from the tool results.\n\n"
+            "SYNTHESIS RULES:\n"
+            "- The user question may contain MULTIPLE sub-questions. Answer EACH sub-question "
+            "in the same order the user asked, as a clear separate sentence or bullet.\n"
+            "- Use ONLY facts present in the tool results. Do NOT invent or estimate any number, "
+            "balance, percentage, or date that is not in the tool results.\n"
+            "- You MAY compute simple derived values from numbers in the tool results "
+            "(e.g. savings_rate = (total_income - total_spent) / total_income, "
+            "category_share = by_category[X] / total_spent). "
+            "Label any derived value so the user knows it is calculated.\n"
+            "- If a sub-question has no supporting tool result, say briefly that part is not "
+            "available yet instead of guessing.\n"
+            "- For forecast or savings figures, note they are estimates ('uoc tinh').\n"
+            "- Respond in natural Vietnamese."
+        )
+        messages = [
+            {"role": "system", "content": system_content},
+            {
+                "role": "user",
+                "content": (
+                    f"Câu hỏi của người dùng: {state['message']}\n\n"
+                    f"Kết quả công cụ đã thực thi:\n{json.dumps(tool_results, ensure_ascii=False)}"
+                ),
+            },
+        ]
+
+        from spectra.chat.tracing import trace_span
+        with trace_span("openai_synthesis", "llm", {"model": model, "messages_count": len(messages)}) as span_rec:
+            final_res = client.chat.completions.create(model=model, messages=messages, temperature=0.2)
+            answer = final_res.choices[0].message.content or "Xin loi, minh chua the tao cau tra loi."
+            span_rec.outputs = {"answer": answer}
+
+        intent = self._infer_intent(state["message"], tool_calls)
+        resp = ChatResponse(
+            answer=answer,
+            intent=intent,
+            tool_calls=tool_calls,
+            debug={"model": model} if state["debug"] else None
+        )
+        return {"response": resp, "synthesized_by_llm": True}
+
+    def _build_confirmation_response(self, task: SubTask) -> ChatResponse:
+        tool_name = task["tool_name"]
+        arguments = task["arguments"]
+        user_id = self.user_id
+
+        if tool_name == "update_transaction_category":
+            tx_id = arguments.get("tx_id", "")
+            category = arguments.get("category", "")
+            apply_to_future = bool(arguments.get("apply_to_future", False))
+            txs = self.executor._get_transactions({"per_page": 20}).get("transactions", [])
+            tx = next((t for t in txs if str(t.get("id")) == str(tx_id)), {})
+            merchant = tx.get("merchant", "giao dịch")
+            amount = abs(float(tx.get("amount", 0)))
+            future_note = " (và áp dụng cho các giao dịch tương tự sau này)" if apply_to_future else ""
+            action = pending_actions.create(
+                user_id=user_id,
+                action_type="update_transaction_category",
+                tool_name=tool_name,
+                tool_arguments=arguments,
+                human_summary=f"Đổi '{merchant}' sang {category}",
+            )
+            return self._confirmation_response(
+                action,
+                answer=(
+                    f"Mình sẽ chuyển giao dịch **{merchant}** ({amount:,.0f} VND) "
+                    f"sang nhóm **{category}**{future_note}. Bạn xác nhận không?"
+                ),
+            )
+
+        elif tool_name == "create_category_rule":
+            pattern = arguments.get("pattern", "")
+            category = arguments.get("category", "")
+            rule_type = arguments.get("rule_type", "contains")
+            rule_desc = "khớp regex" if rule_type == "regex" else "chứa từ"
+            action = pending_actions.create(
+                user_id=user_id,
+                action_type="create_category_rule",
+                tool_name=tool_name,
+                tool_arguments=arguments,
+                human_summary=f"Quy tắc '{pattern}' → {category}",
+            )
+            return self._confirmation_response(
+                action,
+                answer=(
+                    f"Mình sẽ tạo quy tắc: giao dịch nào {rule_desc} **'{pattern}'** "
+                    f"→ tự động xếp vào **{category}**. Bạn xác nhận không?"
+                ),
+            )
+
+        elif tool_name == "create_savings_goal":
+            name = arguments.get("name", "")
+            target_amount = float(arguments.get("target_amount") or 0)
+            target_date = arguments.get("target_date", "")
+            current_amount = float(arguments.get("current_amount") or 0)
+            current_note = f", đã có sẵn {current_amount:,.0f} VND" if current_amount > 0 else ""
+            action = pending_actions.create(
+                user_id=user_id,
+                action_type="create_savings_goal",
+                tool_name=tool_name,
+                tool_arguments=arguments,
+                human_summary=f"Tạo mục tiêu '{name}'",
+            )
+            return self._confirmation_response(
+                action,
+                answer=(
+                    f"Mình sẽ tạo mục tiêu **'{name}'** — cần tiết kiệm "
+                    f"**{target_amount:,.0f} VND** trước ngày **{target_date}**{current_note}. "
+                    f"Bạn xác nhận không?"
+                ),
+                intent=ChatIntent.SAVING_SUGGESTION,
+            )
+
+        elif tool_name == "update_savings_goal":
+            goal_name = arguments.get("goal_name", "")
+            changes = []
+            if arguments.get("name"):
+                changes.append(f"tên → '{arguments['name']}'")
+            if arguments.get("target_amount") is not None:
+                changes.append(f"mục tiêu → {float(arguments['target_amount']):,.0f} VND")
+            if arguments.get("current_amount") is not None:
+                changes.append(f"đã tiết kiệm → {float(arguments['current_amount']):,.0f} VND")
+            if arguments.get("target_date"):
+                changes.append(f"hạn → {arguments['target_date']}")
+            if arguments.get("status"):
+                status_map = {"active": "đang chạy", "paused": "tạm dừng", "completed": "hoàn thành", "archived": "lưu trữ"}
+                changes.append(f"trạng thái → {status_map.get(arguments['status'], arguments['status'])}")
+            change_str = ", ".join(changes) if changes else "thông tin mới"
+            label = f"'{goal_name}'" if goal_name else "mục tiêu tiết kiệm"
+            action = pending_actions.create(
+                user_id=user_id,
+                action_type=tool_name,
+                tool_name=tool_name,
+                tool_arguments=arguments,
+                human_summary=f"Cập nhật {label}",
+            )
+            return self._confirmation_response(
+                action,
+                answer=f"Mình sẽ cập nhật {label}: {change_str}. Bạn xác nhận không?",
+                intent=ChatIntent.SAVING_SUGGESTION,
+            )
+
+        elif tool_name == "archive_savings_goal":
+            goal_name = arguments.get("goal_name", "")
+            label = f"**'{goal_name}'**" if goal_name else "mục tiêu tiết kiệm này"
+            action = pending_actions.create(
+                user_id=user_id,
+                action_type=tool_name,
+                tool_name=tool_name,
+                tool_arguments=arguments,
+                human_summary=f"Hủy {goal_name or 'mục tiêu tiết kiệm'}",
+            )
+            return self._confirmation_response(
+                action,
+                answer=(
+                    f"Mình sẽ hủy (lưu trữ) {label}. "
+                    f"Mục tiêu sẽ không còn hoạt động và không tính vào kế hoạch ngân sách. "
+                    f"Bạn xác nhận không?"
+                ),
+                intent=ChatIntent.SAVING_SUGGESTION,
+            )
+
+        elif tool_name == "update_budget_limit":
+            category = arguments.get("category", "")
+            limit = float(arguments.get("limit") or 0)
+            action = pending_actions.create(
+                user_id=user_id,
+                action_type="update_budget_limit",
+                tool_name=tool_name,
+                tool_arguments=arguments,
+                human_summary=f"Ngân sách {category} → {limit:,.0f} VND",
+            )
+            return self._confirmation_response(
+                action,
+                answer=f"Mình sẽ đặt ngân sách **{category}** thành **{limit:,.0f} VND/tháng**. Bạn xác nhận không?",
+                intent=ChatIntent.SAVING_SUGGESTION,
+            )
+
+        elif tool_name == "upsert_budget_plan":
+            budgets: list[dict] = arguments.get("budgets") or []
+            lines = [f"• {b.get('category', '?')}: {float(b.get('limit', 0)):,.0f} VND" for b in budgets[:8]]
+            budget_list = "\n" + "\n".join(lines) + ("\n• ..." if len(budgets) > 8 else "")
+            action = pending_actions.create(
+                user_id=user_id,
+                action_type="upsert_budget_plan",
+                tool_name=tool_name,
+                tool_arguments=arguments,
+                human_summary=f"Áp dụng kế hoạch ngân sách ({len(budgets)} danh mục)",
+            )
+            return self._confirmation_response(
+                action,
+                answer=(
+                    f"Mình sẽ áp dụng kế hoạch ngân sách gồm **{len(budgets)} danh mục**:{budget_list}\n"
+                    f"Bạn xác nhận không?"
+                ),
+                intent=ChatIntent.SAVING_SUGGESTION,
+            )
+
+        elif tool_name == "remember_user_preference":
+            key = arguments.get("key", "")
+            value = arguments.get("value", {})
+            reason = arguments.get("reason", "")
+            value_str = str(value) if not isinstance(value, dict) else ", ".join(f"{k}={v}" for k, v in value.items())
+            action = pending_actions.create(
+                user_id=user_id,
+                action_type="remember_user_preference",
+                tool_name=tool_name,
+                tool_arguments=arguments,
+                human_summary=f"Ghi nhớ '{key}'",
+            )
+            return self._confirmation_response(
+                action,
+                answer=(
+                    f"Mình sẽ ghi nhớ **{key}**: {value_str}"
+                    + (f" (lý do: {reason})" if reason else "")
+                    + ". Bạn đồng ý để mình nhớ điều này cho các lần trò chuyện sau không?"
+                ),
+                intent=ChatIntent.PRIVACY_OR_PERMISSION,
+            )
+
+        elif tool_name == "forget_user_memory":
+            memory_id = arguments.get("memory_id", "")
+            action = pending_actions.create(
+                user_id=user_id,
+                action_type="forget_user_memory",
+                tool_name=tool_name,
+                tool_arguments=arguments,
+                human_summary=f"Xóa ghi nhớ {memory_id}",
+            )
+            return self._confirmation_response(
+                action,
+                answer=(
+                    f"Mình sẽ xóa ghi nhớ này (ID: `{memory_id}`). "
+                    f"Hành động không thể hoàn tác. Bạn xác nhận không?"
+                ),
+                intent=ChatIntent.PRIVACY_OR_PERMISSION,
+            )
+
+        action = pending_actions.create(
+            user_id=user_id,
+            action_type=tool_name,
+            tool_name=tool_name,
+            tool_arguments=arguments,
+            human_summary=f"Thực hiện {tool_name}",
+        )
+        return self._confirmation_response(
+            action,
+            answer=f"Mình cần bạn xác nhận để thực hiện '{tool_name}'. Bạn đồng ý không?",
+        )
+
+    async def _finalizer_node(self, state: AgentState) -> dict[str, Any]:
+        resp = state["response"]
+        if not resp:
+            return {}
+            
+        tool_results_list = state["tool_results"]
+        req = ChatRequest(
+            message=state["message"],
+            session_id=state["session_id"],
+            scope=state["scope"],
+            debug=state["debug"]
+        )
+        
+        finalized = await self._finalize_read_answer(req, resp, tool_results=tool_results_list)
+        return {"response": finalized}
+
+    async def _output_guard_node(self, state: AgentState) -> dict[str, Any]:
+        resp = state["response"]
+        if not resp:
+            return {}
+        from spectra.chat.guardrails.engine import guardrail_engine
+        resp.answer = guardrail_engine.check_output(resp.answer, resp.intent.value)
+        return {"response": resp}
 
     @staticmethod
     def _make_openai_client(api_key: str, *, timeout: float = 30.0) -> Any:
@@ -538,6 +1501,22 @@ class ChatSupervisor:
             )
             return await self._finalize_read_answer(chat_request, response, tool_results=[result.model_dump(mode="json")])
 
+        # "lời khuyên để cắt giảm [category]" must be caught BEFORE recurring check
+        # because "hàng tháng" in the message triggers _is_recurring_question as a false positive.
+        if self._is_category_advice_question(normalized):
+            category = self._parse_advice_category(normalized)
+            arguments = {"scope": chat_request.scope}
+            if category:
+                arguments["category"] = category
+            result = await self.executor.execute("explain_budget_overrun", arguments)
+            trace = ChatToolCallTrace(tool_name="explain_budget_overrun", arguments=arguments, status=result.status, error=result.error)
+            response = ChatResponse(
+                answer=self._format_budget_overrun_explanation(result.data if isinstance(result.data, dict) else {}),
+                intent=ChatIntent.SAVING_SUGGESTION,
+                tool_calls=[trace],
+            )
+            return await self._finalize_read_answer(chat_request, response, tool_results=[result.model_dump(mode="json")])
+
         if self._is_recurring_question(normalized):
             arguments = {"scope": chat_request.scope, "limit": 10}
             result = await self.executor.execute("get_recurring_transactions", arguments)
@@ -573,6 +1552,35 @@ class ChatSupervisor:
         return None
 
     async def _handle_summary_flow(self, chat_request: ChatRequest, normalized: str) -> ChatResponse | None:
+        # Average monthly spending over the last N months, e.g. "trung bình chi tiêu 6 tháng gần đây".
+        # Routed deterministically so the planner does not improvise a wrong comparison with
+        # overlapping date ranges.
+        recent_months = self._parse_recent_months(normalized)
+        if recent_months and self._is_average_question(normalized):
+            window = self._recent_months_window(recent_months)
+            arguments = {"scope": chat_request.scope, **window}
+            result = await self.executor.execute("get_account_summary", arguments)
+            trace = ChatToolCallTrace(
+                tool_name="get_account_summary",
+                arguments=arguments,
+                status=result.status,
+                error=result.error,
+            )
+            response = ChatResponse(
+                answer=self._format_average_spending_answer(
+                    result.data if isinstance(result.data, dict) else {}, recent_months
+                ),
+                intent=ChatIntent.SPENDING_BREAKDOWN,
+                tool_calls=[trace],
+            )
+            return await self._finalize_read_answer(chat_request, response, tool_results=[result.model_dump(mode="json")])
+
+        if any(token in normalized for token in ["so voi", "so sanh", "nhieu hon", "it hon"]):
+            return None
+        months = re.findall(r"\bthang\s+(\d{1,2})\b", normalized)
+        if len(months) > 1:
+            return None
+
         period = self._parse_summary_period(chat_request.message)
         if not period or not self._is_summary_question(normalized):
             return None
@@ -593,8 +1601,21 @@ class ChatSupervisor:
         return await self._finalize_read_answer(chat_request, response, tool_results=[result.model_dump(mode="json")])
 
     async def _handle_phase7_budget_flow(self, chat_request: ChatRequest, normalized: str) -> ChatResponse | None:
-        if "ngan sach" not in normalized and not self._is_budget_apply_request(normalized):
+        is_pct_reduction = self._is_pct_spending_reduction_question(normalized)
+        if "ngan sach" not in normalized and not self._is_budget_apply_request(normalized) and not is_pct_reduction:
             return None
+
+        # B2: "giảm chi tiêu X%" → get budget data so user knows what to cut
+        if is_pct_reduction and "ngan sach" not in normalized:
+            arguments: dict[str, Any] = {"scope": chat_request.scope}
+            result = await self.executor.execute("get_budget_status", arguments)
+            trace = ChatToolCallTrace(tool_name="get_budget_status", arguments=arguments, status=result.status, error=result.error)
+            response = ChatResponse(
+                answer=self._format_budget_status_answer(result.data if isinstance(result.data, dict) else {}),
+                intent=ChatIntent.SAVING_SUGGESTION,
+                tool_calls=[trace],
+            )
+            return await self._finalize_read_answer(chat_request, response, tool_results=[result.model_dump(mode="json")])
 
         if self._is_budget_apply_request(normalized):
             budgets = self._get_last_budget_plan()
@@ -634,6 +1655,26 @@ class ChatSupervisor:
                 intent=ChatIntent.SAVING_SUGGESTION,
             )
 
+        # D5: "lên kế hoạch ngân sách" must be checked BEFORE parsed_sim because parse_budget_limit_request
+        # may spuriously match percentage digits in the message (e.g. "30%") and "neu" fires the sim branch.
+        if any(token in normalized for token in ["nen dat", "chia ngan sach", "tao ngan sach", "hop ly", "dieu chinh ngan sach", "len ke hoach", "lap ke hoach", "ke hoach ngan sach"]):
+            arguments = {"scope": chat_request.scope}
+            result = await self.executor.execute("recommend_budget_plan", arguments)
+            trace = ChatToolCallTrace(tool_name="recommend_budget_plan", arguments=arguments, status=result.status, error=result.error)
+            data = result.data if isinstance(result.data, dict) else {}
+            if result.status == "success":
+                budgets = [
+                    {"category": item.get("category"), "limit": item.get("recommended_budget")}
+                    for item in list(data.get("recommended_budgets") or [])[:20]
+                ]
+                self._set_last_budget_plan(budgets)
+            response = ChatResponse(
+                answer=self._format_budget_recommendation_answer(data),
+                intent=ChatIntent.SAVING_SUGGESTION,
+                tool_calls=[trace],
+            )
+            return await self._finalize_read_answer(chat_request, response, tool_results=[result.model_dump(mode="json")])
+
         parsed_sim = self._parse_budget_limit_request(chat_request.message)
         if parsed_sim and any(token in normalized for token in ["neu", "thi co", "dat muc"]):
             arguments = {"scope": chat_request.scope, "adjustments": [parsed_sim]}
@@ -658,23 +1699,6 @@ class ChatSupervisor:
             )
             return await self._finalize_read_answer(chat_request, response, tool_results=[result.model_dump(mode="json")])
 
-        if any(token in normalized for token in ["nen dat", "chia ngan sach", "tao ngan sach", "hop ly", "dieu chinh ngan sach"]):
-            arguments = {"scope": chat_request.scope}
-            result = await self.executor.execute("recommend_budget_plan", arguments)
-            trace = ChatToolCallTrace(tool_name="recommend_budget_plan", arguments=arguments, status=result.status, error=result.error)
-            data = result.data if isinstance(result.data, dict) else {}
-            if result.status == "success":
-                budgets = [
-                    {"category": item.get("category"), "limit": item.get("recommended_budget")}
-                    for item in list(data.get("recommended_budgets") or [])[:20]
-                ]
-                self._set_last_budget_plan(budgets)
-            response = ChatResponse(
-                answer=self._format_budget_recommendation_answer(data),
-                intent=ChatIntent.SAVING_SUGGESTION,
-                tool_calls=[trace],
-            )
-            return await self._finalize_read_answer(chat_request, response, tool_results=[result.model_dump(mode="json")])
         return None
 
     async def _handle_phase6_savings_goal_flow(self, chat_request: ChatRequest, normalized: str) -> ChatResponse | None:
@@ -962,8 +1986,87 @@ class ChatSupervisor:
         )
 
     def _build_user_message(self, chat_request: ChatRequest) -> str:
+        from datetime import date, timedelta
+
+        today_vn = get_today_in_user_timezone()
+        today_str = today_vn.isoformat()
         context = self._format_context_for_prompt()
+
+        # Date-range examples below are computed from today so they always agree with
+        # the rule text. Hardcoded example dates go stale and the planner copies them
+        # literally (e.g. picking the wrong end-of-month day).
+        tomorrow_str = (today_vn + timedelta(days=1)).isoformat()  # exclusive end for partial periods
+        week_monday = today_vn - timedelta(days=today_vn.weekday())
+        week_monday_str = week_monday.isoformat()
+        last_week_monday_str = (week_monday - timedelta(days=7)).isoformat()
+        month_start = today_vn.replace(day=1)
+        month_start_str = month_start.isoformat()
+        prev_month_start_str = (month_start - timedelta(days=1)).replace(day=1).isoformat()
+        cur_quarter = (today_vn.month - 1) // 3 + 1
+        quarter_start_str = date(today_vn.year, (cur_quarter - 1) * 3 + 1, 1).isoformat()
+        weekday_vn = ["thứ Hai", "thứ Ba", "thứ Tư", "thứ Năm", "thứ Sáu", "thứ Bảy", "Chủ Nhật"][today_vn.weekday()]
+
+        prompt_rules = f"""### Section A — TOOL SELECTION RULES
+TOOL SELECTION RULES (ưu tiên cao nhất):
+
+Dùng compare_period_spending khi user so sánh 2 kỳ thời gian với nhau:
+- Từ tường minh (có kèm mốc thời gian): "so sánh tháng này với tháng trước", "đối chiếu Q1 và Q2"
+- Từ ngầm định: "nhiều hơn không?", "ít hơn không?", "tăng chưa?", "giảm chưa?", "có thay đổi không?", "khác nhau thế nào?"
+- Pattern: "[period A] vs [period B]", "[tháng/quý/năm A] với [tháng/quý/năm B]"
+
+KHÔNG dùng compare_period_spending cho:
+- "so sánh với người cùng tuổi/địa vị" → đây là peer comparison, Spectra không có dữ liệu này (dùng direct_response)
+- "người có lương X thường chi bao nhiêu" → đây là benchmark question, không phải period comparison
+- Các câu chỉ có "so sánh" nhưng KHÔNG kèm 2 mốc thời gian → dùng get_account_summary
+
+Dùng get_account_summary khi user hỏi về 1 period duy nhất:
+- "tháng này tôi tiêu bao nhiêu?"
+- "chi tiêu tháng 4 là bao nhiêu?"
+- "6 tháng gần đây tôi chi bao nhiêu?" (1 khoảng thời gian duy nhất)
+- KHÔNG có từ so sánh kèm 2 mốc thời gian khác nhau
+
+QUAN TRỌNG: Nếu user đề cập 2 mốc thời gian bất kỳ TRONG CÙNG 1 CÂU HỎI SO SÁNH → dùng compare_period_spending. Nếu chỉ hỏi 1 khoảng thời gian → dùng get_account_summary.
+
+CÂU HỎI NHIỀU Ý: Nếu câu hỏi gồm nhiều ý khác nhau (vd vừa hỏi chi tiêu, vừa hỏi tiết kiệm), hãy tách MỖI ý thành một task riêng với tool phù hợp (xem MULTI-INTENT DECOMPOSITION). Quy tắc so sánh ở trên chỉ áp dụng trong phạm vi MỘT ý so sánh, không gộp các ý khác nhau lại.
+
+### Section B — DATE RANGE RULES
+DATE RANGE RULES:
+Ngày hôm nay (Asia/Ho_Chi_Minh): {today_str}
+
+TUẦN:
+- "tuần này"   = thứ Hai đầu tuần hiện tại → today+1 (exclusive)
+- "tuần trước" = thứ Hai tuần trước → thứ Hai tuần này (exclusive)
+Ví dụ nếu today={today_str} ({weekday_vn}):
+  tuần này:   period_from={week_monday_str}, period_to={tomorrow_str}
+  tuần trước: period_from={last_week_monday_str}, period_to={week_monday_str}
+
+THÁNG:
+- "tháng này"   = ngày 1 tháng hiện tại → today+1 (exclusive)
+- "tháng trước" = ngày 1 tháng trước → ngày 1 tháng này (exclusive)
+Ví dụ nếu today={today_str}:
+  tháng này:   period_from={month_start_str}, period_to={tomorrow_str}
+  tháng trước: period_from={prev_month_start_str}, period_to={month_start_str}
+
+QUÝ (QUAN TRỌNG — dùng exclusive end):
+- Q1: period_from=YYYY-01-01, period_to=YYYY-04-01
+- Q2: period_from=YYYY-04-01, period_to=YYYY-07-01  (hoặc today+1 nếu chưa xong)
+- Q3: period_from=YYYY-07-01, period_to=YYYY-10-01
+- Q4: period_from=YYYY-10-01, period_to=YYYY+1-01-01
+Ví dụ nếu today={today_str}:
+  Quý hiện tại Q{cur_quarter} (chưa xong): period_from={quarter_start_str}, period_to={tomorrow_str}  ← MTD
+
+NĂM:
+- "năm nay"    = YYYY-01-01 → today+1 (exclusive)
+- "năm ngoái"  = (YYYY-1)-01-01 → YYYY-01-01 (exclusive)
+
+NGUYÊN TẮC CHUNG:
+- Luôn dùng exclusive end convention (period_to là ngày KHÔNG bao gồm)
+- "period_to" của full month/quarter = ngày 1 của period tiếp theo
+- "period_to" của partial period = today + 1 ngày"""
+
         return (
+            f"Ngay hom nay: {today_str} (Asia/Ho_Chi_Minh timezone).\n"
+            f"{prompt_rules}\n"
             f"Cau hoi cua nguoi dung: {chat_request.message}\n"
             f"Pham vi mac dinh cho du lieu tai chinh: {chat_request.scope}.\n"
             f"Ngu canh hoi thoai va bo nho an toan:\n{context}\n"
@@ -1195,6 +2298,30 @@ class ChatSupervisor:
         return "ngan sach" in normalized and any(token in normalized for token in ["tai sao", "vi sao", "ly do", "khoan nao lam"])
 
     @staticmethod
+    def _is_category_advice_question(normalized: str) -> bool:
+        # "lời khuyên để cắt giảm [category]" — must match BOTH advice intent AND a reduction signal.
+        # Gated by "loi khuyen" to avoid catching general "cắt giảm" questions (e.g. B1).
+        return "loi khuyen" in normalized and any(
+            t in normalized for t in ["cat giam", "giam chi", "tiet giam"]
+        )
+
+    @staticmethod
+    def _parse_advice_category(normalized: str) -> str:
+        # Extract category name from "cat giam [chi phi] X" or "giam chi phi X"
+        m = re.search(
+            r"(?:cat giam chi phi|giam chi phi|cat giam)\s+([a-z0-9\s]+?)(?:\s+hang\b|\s+moi\b|\s+trong\b|\s*\?|$)",
+            normalized,
+        )
+        return m.group(1).strip() if m else ""
+
+    @staticmethod
+    def _is_pct_spending_reduction_question(normalized: str) -> bool:
+        # "giảm chi tiêu xuống X%" / "cắt giảm chi tiêu X%" — user wants to reduce total spending by a percentage.
+        has_pct = "%" in normalized or "phan tram" in normalized
+        has_reduce = any(t in normalized for t in ["giam chi tieu", "cat giam chi tieu", "giam xuong"])
+        return has_pct and has_reduce
+
+    @staticmethod
     def _is_cashflow_calendar_question(normalized: str) -> bool:
         return any(token in normalized for token in ["lich dong tien", "ngay nao thieu tien", "ngay nao de thieu", "tu gio toi cuoi thang"])
 
@@ -1225,7 +2352,11 @@ class ChatSupervisor:
         normalized = ChatSupervisor._fold(message)
         if "mua" not in normalized and "neu chi" not in normalized and "neu tieu" not in normalized:
             return None
-        if not any(token in normalized for token in ["co on", "duoc khong", "co sao", "anh huong", "thi sao"]):
+        # "có thể mua X không?" and "nên mua X không?" are feasibility questions
+        if not any(token in normalized for token in [
+            "co on", "duoc khong", "co sao", "anh huong", "thi sao",
+            "co the mua", "nen mua", "co nen mua",
+        ]):
             return None
         match = re.search(r"(\d+(?:[.,]\d+)?)\s*(trieu|m|k|nghin|ngan)?", normalized)
         if not match:
@@ -1290,6 +2421,87 @@ class ChatSupervisor:
         month = int(match.group(1))
         year = int(match.group(2)) if match.group(2) else current.year
         return month_range(year, month)
+
+    @staticmethod
+    def _is_average_question(normalized: str) -> bool:
+        return "trung binh" in normalized
+
+    @staticmethod
+    def _parse_recent_months(normalized: str) -> int | None:
+        """Parse a duration like "6 thang gan day" -> 6.
+
+        Only matches the duration form (digit *before* "thang"), so "thang 6"
+        (a specific calendar month) is intentionally not matched.
+        """
+        match = re.search(r"\b(\d{1,2})\s*thang\b", normalized)
+        if not match:
+            return None
+        n = int(match.group(1))
+        if n < 1 or n > 24:
+            return None
+        return n
+
+    @staticmethod
+    def _recent_months_window(months: int, *, today=None) -> dict[str, str]:
+        """Return a date_from/date_to window covering the last *months* calendar months."""
+        from datetime import date
+
+        current = today or date.today()
+        if current.month == 12:
+            end = date(current.year + 1, 1, 1)
+        else:
+            end = date(current.year, current.month + 1, 1)
+        m_index = (current.year * 12 + (current.month - 1)) - (months - 1)
+        start = date(m_index // 12, m_index % 12 + 1, 1)
+        return {"date_from": start.isoformat(), "date_to": end.isoformat()}
+
+    @staticmethod
+    def _format_average_spending_answer(data: dict[str, Any], months: int) -> str:
+        if not data or not data.get("has_data"):
+            return f"Trong {months} tháng gần đây, mình chưa thấy giao dịch nào để tính trung bình."
+        currency = str(data.get("currency") or data.get("base_currency") or "VND")
+        total_spent = float(data.get("total_spent") or 0)
+        total_income = float(data.get("total_income") or 0)
+        avg_spent = total_spent / months if months else 0.0
+        avg_income = total_income / months if months else 0.0
+        lines = [
+            f"Trong {months} tháng gần đây, bạn chi tổng cộng {total_spent:,.0f} {currency}, "
+            f"trung bình khoảng {avg_spent:,.0f} {currency} mỗi tháng.",
+        ]
+        if total_income:
+            lines.append(f"Thu nhập trung bình khoảng {avg_income:,.0f} {currency} mỗi tháng.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _is_multi_intent(message: str, normalized: str) -> bool:
+        """Detect a compound question that spans several distinct finance topics.
+
+        Used to stop the deterministic fast-path from answering only one part of a
+        multi-intent question; such questions are routed to the planner instead.
+
+        Signal is the number of DISTINCT topic groups present (>=2), or two or more
+        explicit question marks. A single conjunction like "và" is intentionally not
+        enough, because single questions ("tổng chi và thu tháng 5") use it too.
+        """
+        if str(message or "").count("?") >= 2:
+            return True
+        topic_groups = (
+            ["chi tieu", "tieu bao nhieu", "tong chi", "tong thu", "thu nhap", "tieu het", "tieu nhieu"],
+            ["de danh", "tiet kiem", "muc tieu", "danh duoc", "de ra"],
+            ["ngan sach"],
+            ["du bao", "so du", "con bao nhieu tien", "cuoi thang con", "cuoi thang"],
+            ["dinh ky", "subscription", "thue bao"],
+            ["tra no", "khoan no", "tra gop", "con no"],
+            ["bat thuong", "giao dich la"],
+            ["suc khoe tai chinh", "diem tai chinh", "tai chinh co on", "co on khong", "tai chinh on"],
+        )
+        matched = 0
+        for keywords in topic_groups:
+            if any(kw in normalized for kw in keywords):
+                matched += 1
+                if matched >= 2:
+                    return True
+        return False
 
     @staticmethod
     def _is_goal_planning_question(normalized: str) -> bool:
@@ -1738,7 +2950,7 @@ class ChatSupervisor:
                 return ChatIntent.ANOMALY_EXPLANATION
             if tool_name == "get_balance_forecast":
                 return ChatIntent.FORECAST_BALANCE
-            if tool_name == "get_financial_health_score":
+            if tool_name in {"get_financial_health_score", "get_peer_benchmark"}:
                 return ChatIntent.FINANCIAL_HEALTH_SCORE
             if tool_name in {
                 "plan_savings_goal",

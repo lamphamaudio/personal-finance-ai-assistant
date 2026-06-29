@@ -64,6 +64,43 @@ def test_tool_guard_dangerous_unregistered():
     assert "Tool is not registered" in result.error
 
 
+def test_scope_guard_grants_authenticated_user():
+    # An authenticated user holds the standard scopes and may run a read tool.
+    res = guardrail_engine.check_tool_call(
+        "get_budget_status", {"scope": "cycle"}, None, "user-1"
+    )
+    assert res is None  # None means no guard rejected the call
+
+
+def test_scope_guard_denies_anonymous_user():
+    # No user_id -> no scopes granted -> fail closed at the ScopeGuard itself.
+    from spectra.chat.guardrails.tool_guards import ScopeGuard
+
+    res = ScopeGuard().check("get_budget_status", {"scope": "cycle"}, "")
+    assert not res.passed
+    assert res.status == "rejected"
+    assert "permission" in res.reason.lower()
+
+
+def test_scope_guard_denies_tool_with_unlisted_scope(monkeypatch):
+    # A tool whose required scope is not in the granted set is denied.
+    from spectra.chat.guardrails import tool_guards
+    from spectra.chat.tools import get_tool
+
+    real_get_tool = get_tool
+
+    def fake_get_tool(name):
+        tool = real_get_tool("get_budget_status")
+        if tool is not None:
+            return tool.model_copy(update={"required_scope": "admin.super"})
+        return tool
+
+    monkeypatch.setattr(tool_guards, "get_tool", fake_get_tool)
+    res = tool_guards.ScopeGuard().check("get_budget_status", {}, "user-1")
+    assert not res.passed
+    assert res.status == "rejected"
+
+
 def test_tool_guard_financial_health_refresh():
     executor = ToolExecutor(_request(), user_id="user-1")
     result = asyncio.run(

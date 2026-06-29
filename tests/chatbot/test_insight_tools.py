@@ -1,10 +1,12 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from unittest.mock import patch
 
 from spectra.chat.insight_tools import (
     compare_period_spending,
     explain_budget_overrun,
     get_debt_summary,
     get_emergency_fund_status,
+    get_peer_benchmark,
     get_recurring_transactions,
     simulate_purchase_impact,
 )
@@ -124,3 +126,258 @@ def test_emergency_fund_uses_essential_monthly_spend(monkeypatch):
 
     assert result["monthly_essential_spend"] > 0
     assert result["target_amount"] > 0
+
+
+def test_peer_benchmark_good_saver_compares_against_bracket(monkeypatch):
+    today = date.today()
+    rows = [
+        ((today - timedelta(days=15)).isoformat(), "Salary", 45_000_000, "Thu nhap", ""),
+        ((today - timedelta(days=14)).isoformat(), "Rent", -9_000_000, "nha o", ""),
+        ((today - timedelta(days=10)).isoformat(), "Shopping", -6_000_000, "Mua sam", ""),
+    ]
+    _patch_rows(monkeypatch, rows)
+
+    result = get_peer_benchmark("user-1", scope="90d")
+
+    # ~15tr/thang => nhom thu nhap trung binh thap (10-20 trieu)
+    assert "10-20" in result["income_bracket"]
+    assert result["actual_allocation"]["savings_pct"] > result["benchmark_allocation"]["savings_pct"]
+    assert result["comparison"]["savings"]["status"] == "better"
+    assert result["overall_assessment"] in {"good", "on_track"}
+    # Luon kem disclaimer khong phai du lieu peer that
+    assert any("nguoi dung khac" in lim for lim in result["limitations"])
+
+
+def test_peer_benchmark_low_saver_flags_needs_improvement(monkeypatch):
+    today = date.today()
+    rows = [
+        ((today - timedelta(days=15)).isoformat(), "Salary", 45_000_000, "Thu nhap", ""),
+        ((today - timedelta(days=14)).isoformat(), "Rent", -24_000_000, "nha o", ""),
+        ((today - timedelta(days=10)).isoformat(), "Dining", -21_000_000, "Food", ""),
+    ]
+    _patch_rows(monkeypatch, rows)
+
+    result = get_peer_benchmark("user-1", scope="90d")
+
+    assert result["comparison"]["savings"]["status"] == "worse"
+    assert result["overall_assessment"] == "needs_improvement"
+    assert result["suggestions"]
+
+
+def test_peer_benchmark_income_override_selects_high_bracket(monkeypatch):
+    today = date.today()
+    rows = [
+        ((today - timedelta(days=10)).isoformat(), "Rent", -10_000_000, "nha o", ""),
+    ]
+    _patch_rows(monkeypatch, rows)
+
+    result = get_peer_benchmark("user-1", scope="90d", monthly_income_override=50_000_000)
+
+    assert "tren 40" in result["income_bracket"]
+    assert result["monthly_income"] == 50_000_000
+
+
+def test_peer_benchmark_without_income_returns_insufficient_data(monkeypatch):
+    today = date.today()
+    rows = [
+        ((today - timedelta(days=10)).isoformat(), "Rent", -3_000_000, "nha o", ""),
+    ]
+    _patch_rows(monkeypatch, rows)
+
+    result = get_peer_benchmark("user-1", scope="90d")
+
+    assert result["status"] == "insufficient_data"
+
+
+def test_auto_sort_reverses_when_older_sent_as_a(monkeypatch):
+    """Ensure that if period_a is older than period_b, they are swapped so period_a is always the newer one."""
+    _patch_rows(monkeypatch, [])
+    # May 2026 vs June 2026
+    result = compare_period_spending(
+        "user-1",
+        period_a_from="2026-05-01",
+        period_a_to="2026-06-01",
+        period_b_from="2026-06-01",
+        period_b_to="2026-07-01",
+    )
+    assert result["period_a"]["start"] == "2026-06-01"
+    assert result["period_a"]["label"] == "current"
+    assert result["period_b"]["start"] == "2026-05-01"
+    assert result["period_b"]["label"] == "previous"
+
+
+def test_auto_sort_no_change_when_correct_order(monkeypatch):
+    """Ensure that if period_a is already newer than period_b, no swap occurs."""
+    _patch_rows(monkeypatch, [])
+    # June 2026 vs May 2026
+    result = compare_period_spending(
+        "user-1",
+        period_a_from="2026-06-01",
+        period_a_to="2026-07-01",
+        period_b_from="2026-05-01",
+        period_b_to="2026-06-01",
+    )
+    assert result["period_a"]["start"] == "2026-06-01"
+    assert result["period_b"]["start"] == "2026-05-01"
+
+
+@patch("spectra.chat.insight_tools.get_today_in_user_timezone")
+def test_mtd_alignment_truncates_period_b(mock_today, monkeypatch):
+    """Ensure that if period_a is partial/unfinished, period_b's end is aligned/truncated."""
+    mock_today.return_value = date(2026, 6, 24)
+    _patch_rows(monkeypatch, [])
+    result = compare_period_spending(
+        "user-1",
+        period_a_from="2026-06-01",
+        period_a_to="2026-06-24",
+        period_b_from="2026-05-01",
+        period_b_to="2026-06-01",
+    )
+    assert result["period_a"]["start"] == "2026-06-01"
+    assert result["period_a"]["end"] == "2026-06-24"
+    assert result["period_b"]["start"] == "2026-05-01"
+    assert result["period_b"]["end"] == "2026-05-24"
+
+
+@patch("spectra.chat.insight_tools.get_today_in_user_timezone")
+def test_no_alignment_when_both_full(mock_today, monkeypatch):
+    """Ensure no truncation alignment occurs when both periods are in the past and fully completed."""
+    mock_today.return_value = date(2026, 6, 24)
+    _patch_rows(monkeypatch, [])
+    result = compare_period_spending(
+        "user-1",
+        period_a_from="2026-05-01",
+        period_a_to="2026-06-01",
+        period_b_from="2026-04-01",
+        period_b_to="2026-05-01",
+    )
+    assert result["period_a"]["end"] == "2026-06-01"
+    assert result["period_b"]["end"] == "2026-05-01"
+
+
+@patch("spectra.chat.insight_tools.get_today_in_user_timezone")
+def test_period_b_shorter_than_aligned_adds_limitation(mock_today, monkeypatch):
+    """Ensure that if period_b is shorter than the aligned length, no extension occurs and a limitation is added."""
+    mock_today.return_value = date(2026, 6, 24)
+    _patch_rows(monkeypatch, [])
+    result = compare_period_spending(
+        "user-1",
+        period_a_from="2026-06-01",
+        period_a_to="2026-06-24",
+        period_b_from="2026-05-15",
+        period_b_to="2026-05-20",
+    )
+    assert result["period_b"]["end"] == "2026-05-20"
+    assert any("skewed" in lim for lim in result["limitations"])
+
+
+def test_delta_pct_label_new_spending(monkeypatch):
+    """Ensure delta_pct_label is 'new_spending' when period_b spend is 0 and period_a spend is positive."""
+    rows = [
+        ("2026-06-10", "Grab", -150_000, "Transport", ""),
+    ]
+    _patch_rows(monkeypatch, rows)
+    result = compare_period_spending(
+        "user-1",
+        period_a_from="2026-06-01",
+        period_a_to="2026-07-01",
+        period_b_from="2026-05-01",
+        period_b_to="2026-06-01",
+    )
+    assert result["totals"]["spent_delta_pct"] is None
+    assert result["totals"]["spent_delta_pct_label"] == "new_spending"
+    assert result["category_deltas"][0]["delta_pct_label"] == "new_spending"
+
+
+def test_delta_pct_label_stopped_spending(monkeypatch):
+    """Ensure delta_pct is -100.0 and delta_pct_label is 'stopped_spending' when period_a spend is 0 and period_b spend is positive."""
+    rows = [
+        ("2026-05-10", "Grab", -150_000, "Transport", ""),
+    ]
+    _patch_rows(monkeypatch, rows)
+    result = compare_period_spending(
+        "user-1",
+        period_a_from="2026-06-01",
+        period_a_to="2026-07-01",
+        period_b_from="2026-05-01",
+        period_b_to="2026-06-01",
+    )
+    assert result["totals"]["spent_delta_pct"] == -100.0
+    assert result["totals"]["spent_delta_pct_label"] == "stopped_spending"
+    assert result["category_deltas"][0]["delta_pct_label"] == "stopped_spending"
+
+
+def test_delta_pct_label_no_activity(monkeypatch):
+    """Ensure delta_pct_label is 'no_activity' when both periods have 0 spend."""
+    _patch_rows(monkeypatch, [])
+    result = compare_period_spending(
+        "user-1",
+        period_a_from="2026-06-01",
+        period_a_to="2026-07-01",
+        period_b_from="2026-05-01",
+        period_b_to="2026-06-01",
+    )
+    assert result["totals"]["spent_delta_pct"] is None
+    assert result["totals"]["spent_delta_pct_label"] == "no_activity"
+
+
+@patch("spectra.chat.insight_tools.get_today_in_user_timezone")
+def test_default_periods_are_mtd_aligned(mock_today, monkeypatch):
+    """Ensure default periods are Month-to-Date (MTD) aligned when no args are provided."""
+    mock_today.return_value = date(2026, 6, 24)
+    _patch_rows(monkeypatch, [])
+    result = compare_period_spending("user-1")
+    assert result["period_a"]["start"] == "2026-06-01"
+    assert result["period_a"]["end"] == "2026-06-25"
+    assert result["period_b"]["start"] == "2026-05-01"
+    assert result["period_b"]["end"] == "2026-05-25"
+
+
+from spectra.chat.insight_tools import get_today_in_user_timezone
+@patch("spectra.chat.insight_tools.datetime")
+def test_timezone_uses_ho_chi_minh_not_utc(mock_dt):
+    """Ensure the user timezone (Asia/Ho_Chi_Minh) is used to resolve 'today' rather than server UTC date."""
+    def now_side_effect(tz=None):
+        utc_dt = datetime(2026, 6, 24, 17, 0, 0, tzinfo=timezone.utc)
+        if tz is not None:
+            return utc_dt.astimezone(tz)
+        return utc_dt
+    mock_dt.now.side_effect = now_side_effect
+    result = get_today_in_user_timezone()
+    assert result == date(2026, 6, 25)
+
+
+@patch("spectra.chat.insight_tools.get_today_in_user_timezone")
+def test_partial_period_boundary_end_equals_today(mock_today):
+    """Boundary test: end_date == today is considered partial (since end date is exclusive)."""
+    mock_today.return_value = date(2026, 6, 24)
+    from spectra.chat.insight_tools import _is_partial_period
+    assert _is_partial_period(date(2026, 6, 1), date(2026, 6, 24), date(2026, 6, 24)) is True
+
+
+@patch("spectra.chat.insight_tools.get_today_in_user_timezone")
+def test_full_period_boundary_end_is_tomorrow(mock_today):
+    """Boundary test: end_date == today + 1 is considered full/finished (exclusive convention)."""
+    mock_today.return_value = date(2026, 6, 24)
+    from spectra.chat.insight_tools import _is_partial_period
+    assert _is_partial_period(date(2026, 6, 1), date(2026, 6, 25), date(2026, 6, 24)) is False
+
+
+def test_delta_pct_label_normal(monkeypatch):
+    """Ensure delta_pct_label is 'normal' when both periods have positive spending."""
+    rows = [
+        ("2026-06-10", "Grab", -150_000, "Transport", ""),
+        ("2026-05-10", "Grab", -100_000, "Transport", ""),
+    ]
+    _patch_rows(monkeypatch, rows)
+    result = compare_period_spending(
+        "user-1",
+        period_a_from="2026-06-01",
+        period_a_to="2026-07-01",
+        period_b_from="2026-05-01",
+        period_b_to="2026-06-01",
+    )
+    assert result["totals"]["spent_delta_pct"] == 50.0
+    assert result["totals"]["spent_delta_pct_label"] == "normal"
+    assert result["category_deltas"][0]["delta_pct_label"] == "normal"
+

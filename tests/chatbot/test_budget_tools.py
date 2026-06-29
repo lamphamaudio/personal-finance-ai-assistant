@@ -14,6 +14,91 @@ def setup_function():
     pending_actions.clear()
 
 
+_SUMMARY = {
+    "total_income": 0.0,
+    "total_spent": 1_000_000.0,
+    "by_category": {"Ăn uống": 1_000_000.0},
+    "currency": "VND",
+}
+
+
+def test_recommend_budget_plan_uses_stated_monthly_income():
+    from spectra.budget_planner import recommend_budget_plan
+
+    result = recommend_budget_plan(
+        "user-1",
+        scope="cycle",
+        monthly_income=8_000_000,
+        summary_payload=_SUMMARY,
+        budget_payload={"items": []},
+    )
+    # Stated salary overrides the (zero) income derived from transactions.
+    assert result["summary"]["total_income"] == 8_000_000
+    assert result["summary"]["income_source"] == "user_stated"
+    assert result["summary"]["available_for_spending"] > 0
+    assert "income" not in result["missing_data"]
+    # With real income there is room to allocate a non-trivial category budget.
+    assert any(item["recommended_budget"] > 0 for item in result["recommended_budgets"])
+
+
+def test_recommend_budget_plan_falls_back_to_data_income():
+    from spectra.budget_planner import recommend_budget_plan
+
+    result = recommend_budget_plan(
+        "user-1",
+        scope="cycle",
+        summary_payload=_SUMMARY,
+        budget_payload={"items": []},
+    )
+    assert result["summary"]["total_income"] == 0
+    assert result["summary"]["income_source"] == "transactions"
+    assert "income" in result["missing_data"]
+
+
+def test_recommend_budget_plan_uses_template_when_history_sparse():
+    from spectra.budget_planner import recommend_budget_plan
+
+    # One historical category + a stated salary -> a multi-category template plan.
+    result = recommend_budget_plan(
+        "user-1",
+        scope="cycle",
+        monthly_income=8_000_000,
+        summary_payload=_SUMMARY,
+        budget_payload={"items": []},
+    )
+    assert result["strategy"] == "template_budget"
+    cats = [item["category"] for item in result["recommended_budgets"]]
+    assert len(cats) >= 5
+    assert "Ăn uống" in cats and "Nhà ở" in cats
+    available = result["summary"]["available_for_spending"]
+    allocated = sum(item["recommended_budget"] for item in result["recommended_budgets"])
+    # The template distributes (almost) all of the spend-able amount.
+    assert abs(allocated - available) < 1.0
+
+
+def test_recommend_budget_plan_uses_history_when_rich():
+    from spectra.budget_planner import recommend_budget_plan
+
+    rich = {
+        "total_income": 10_000_000.0,
+        "total_spent": 6_000_000.0,
+        "by_category": {
+            "Ăn uống": 3_000_000.0,
+            "Di chuyển": 1_500_000.0,
+            "Mua sắm": 1_000_000.0,
+            "Giải trí": 500_000.0,
+        },
+        "currency": "VND",
+    }
+    result = recommend_budget_plan(
+        "user-1",
+        scope="cycle",
+        summary_payload=rich,
+        budget_payload={"items": []},
+    )
+    assert result["strategy"] == "goal_aware_budget"
+
+
 def test_budget_read_tools_reject_user_id_argument():
     executor = ToolExecutor(_request(), user_id="user-1")
 

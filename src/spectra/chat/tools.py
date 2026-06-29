@@ -261,7 +261,14 @@ _TOOLS: dict[str, RegisteredTool] = {
             {
                 "scope": {"type": "string", "enum": ["cycle", "90d", "ytd"], "default": "cycle"},
                 "goal_id": {"type": "string", "default": ""},
-                "target_savings_amount": {"type": "number"},
+                "target_savings_amount": {
+                    "type": "number",
+                    "description": "How much the user wants to SAVE (e.g. 'tiết kiệm/để dành X'). Not the salary.",
+                },
+                "monthly_income": {
+                    "type": "number",
+                    "description": "User-stated monthly income/salary (e.g. 'lương 8tr' -> 8000000). Overrides income from transaction data.",
+                },
             }
         ),
         required_scope="budget.read",
@@ -386,6 +393,56 @@ _TOOLS: dict[str, RegisteredTool] = {
         description="Estimate emergency fund coverage from current balance and essential historical expenses.",
         parameters=_object_schema({"months_target": {"type": "number", "default": 3}}),
         required_scope="forecast.read",
+    ),
+    "simulate_income_change": RegisteredTool(
+        name="simulate_income_change",
+        description="Simulate how a monthly income increase or decrease changes cashflow surplus, savings rate, and goal feasibility.",
+        parameters=_object_schema(
+            {
+                "income_delta": {
+                    "type": "number",
+                    "description": "Monthly income change in VND. Positive = increase, negative = decrease. E.g. +3000000 for +3tr/month.",
+                },
+                "scope": {"type": "string", "enum": ["cycle", "90d", "ytd"], "default": "cycle"},
+            },
+            required=["income_delta"],
+        ),
+        required_scope="forecast.read",
+    ),
+    "get_peer_benchmark": RegisteredTool(
+        name="get_peer_benchmark",
+        description=(
+            "Compare the user's spending allocation (needs/wants/savings) against general reference benchmarks "
+            "(50/30/20 rule and income-bracket norms). Use for peer/social comparison questions like "
+            "'so sánh với người cùng tuổi/cùng địa vị', 'chi tiêu của tôi đã hợp lý chưa', "
+            "'người có lương X thường chi bao nhiêu'. Does NOT use other users' real data."
+        ),
+        parameters=_object_schema(
+            {
+                "scope": {"type": "string", "enum": ["cycle", "90d", "ytd"], "default": "90d"},
+                "monthly_income_override": {
+                    "type": "number",
+                    "description": "Optional monthly income in VND to use instead of inferring from transactions.",
+                },
+            }
+        ),
+        required_scope="analytics.read",
+    ),
+    "get_spending_patterns": RegisteredTool(
+        name="get_spending_patterns",
+        description="Analyze historical spending patterns by weekday, day of month, or week of month to reveal when the user spends most.",
+        parameters=_object_schema(
+            {
+                "scope": {"type": "string", "enum": ["cycle", "90d", "ytd"], "default": "90d"},
+                "group_by": {
+                    "type": "string",
+                    "enum": ["weekday", "day_of_month", "week_of_month"],
+                    "default": "weekday",
+                    "description": "How to group transactions: by day of week, by day of month, or by week of month.",
+                },
+            }
+        ),
+        required_scope="analytics.read",
     ),
     "get_conversation_context": RegisteredTool(
         name="get_conversation_context",

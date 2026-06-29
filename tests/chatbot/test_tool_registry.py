@@ -37,6 +37,9 @@ def test_tool_registry_contains_phase_3_tools_without_destructive_tools():
         "simulate_purchase_impact",
         "get_debt_summary",
         "get_emergency_fund_status",
+        "simulate_income_change",
+        "get_spending_patterns",
+        "get_peer_benchmark",
         "get_conversation_context",
         "get_user_memories",
         "remember_user_preference",
@@ -68,6 +71,9 @@ def test_tool_registry_contains_phase_3_tools_without_destructive_tools():
     assert tools["simulate_purchase_impact"].read_only is True
     assert tools["get_debt_summary"].read_only is True
     assert tools["get_emergency_fund_status"].read_only is True
+    assert tools["simulate_income_change"].read_only is True
+    assert tools["get_spending_patterns"].read_only is True
+    assert tools["get_peer_benchmark"].read_only is True
     assert not any(tool.dangerous for tool in tools.values())
     assert "reset_db" not in tools
     assert "learning_reapply" not in tools

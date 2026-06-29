@@ -419,6 +419,21 @@ class BookmarkDB:
         ).fetchone()
         return row is not None
 
+    def get_seen_ids(self, tx_ids: list[str], user_id: str = "") -> set[str]:
+        """Return the subset of *tx_ids* already processed, in a single query.
+
+        Batched alternative to calling :meth:`is_seen` per transaction.
+        """
+        ids = [tx_id for tx_id in tx_ids if tx_id]
+        if not ids:
+            return set()
+        placeholders = ",".join(["%s"] * len(ids))
+        rows = self._conn.execute(
+            f"SELECT tx_id FROM app_seen_transactions WHERE user_id = %s AND tx_id IN ({placeholders})",
+            (str(user_id or ""), *ids),
+        ).fetchall()
+        return {str(row[0]) for row in rows}
+
     def mark_seen(self, tx_id: str, source: str = "CSV") -> None:
         """Record that *tx_id* has been processed."""
         from datetime import datetime, timezone
@@ -882,6 +897,43 @@ class BookmarkDB:
         ).fetchone()
         self._conn.commit()
         return int(row[0])
+
+    def record_learning_feedback_batch(self, events: list[dict[str, Any]]) -> None:
+        """Persist many learning events in one round-trip.
+
+        Each event dict accepts the same fields as :meth:`record_learning_feedback`
+        (user_id, tx_id, original_description, clean_name, category, source,
+        apply_to_future). Batched alternative for bulk import/confirm flows.
+        """
+        if not events:
+            return
+        self._conn.executemany(
+            """
+            INSERT INTO app_learning_feedback (
+                user_id,
+                tx_id,
+                original_description,
+                clean_name,
+                category,
+                source,
+                apply_to_future
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            [
+                (
+                    str(event.get("user_id") or ""),
+                    event.get("tx_id"),
+                    str(event.get("original_description") or ""),
+                    str(event.get("clean_name") or ""),
+                    str(event.get("category") or ""),
+                    str(event.get("source") or ""),
+                    bool(event.get("apply_to_future")),
+                )
+                for event in events
+            ],
+        )
+        self._conn.commit()
 
     def get_recent_learning_feedback(self, limit: int = 40, user_id: str = "") -> list[dict[str, object]]:
         """Return the most recent user learning events."""

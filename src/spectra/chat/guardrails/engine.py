@@ -15,6 +15,7 @@ from spectra.chat.guardrails.input_guards import (
 )
 from spectra.chat.guardrails.tool_guards import (
     UnregisteredToolGuard,
+    ScopeGuard,
     ToolParameterGuard,
     WriteConfirmationGuard,
 )
@@ -39,6 +40,7 @@ class GuardrailEngine:
         ]
         # Tool guards
         self.unregistered_tool_guard = UnregisteredToolGuard()
+        self.scope_guard = ScopeGuard()
         self.tool_parameter_guard = ToolParameterGuard()
         self.write_confirmation_guard = WriteConfirmationGuard()
         # Output guards
@@ -84,6 +86,12 @@ class GuardrailEngine:
         res = self.unregistered_tool_guard.check(tool_name, arguments, user_id)
         if not res.passed:
             logger.warning("Tool Guardrail triggered (Unregistered/Dangerous): %s", res.reason)
+            return ToolExecutionResult(tool_name=tool_name, status=res.status, error=res.reason)
+
+        # Permission scope check (fail closed)
+        res = self.scope_guard.check(tool_name, arguments, user_id)
+        if not res.passed:
+            logger.warning("Tool Guardrail triggered (Scope check): %s", res.reason)
             return ToolExecutionResult(tool_name=tool_name, status=res.status, error=res.reason)
 
         # Parameter checks

@@ -1,0 +1,573 @@
+{
+  "run_at": "2026-06-27T13:28:06.797033",
+  "base_url": "http://127.0.0.1:8081",
+  "user_id": "05d19ba1-a404-4666-b7ee-35069d6c66ca",
+  "total": 17,
+  "passed": 14,
+  "failed": 3,
+  "errors": 0,
+  "results": [
+    {
+      "id": "Q01",
+      "group": "Deterministic / fast-path",
+      "question": "Tháng này tôi chi tiêu bao nhiêu?",
+      "note": "",
+      "started_at": "2026-06-27T13:25:35.441068",
+      "answer": "Trong tháng 6/2026, mình chưa thấy giao dịch nào.",
+      "debug": {
+        "intent": "SPENDING_BREAKDOWN",
+        "tool_calls": [
+          {
+            "tool_name": "get_account_summary",
+            "arguments": {
+              "scope": "cycle",
+              "date_from": "2026-06-01",
+              "date_to": "2026-07-01"
+            },
+            "status": "success",
+            "error": null
+          }
+        ],
+        "confirmation": null,
+        "debug": {
+          "finalizer": {
+            "used": true,
+            "model": "gpt-4o-mini"
+          }
+        }
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 4.62,
+      "status": "PASS",
+      "issues": []
+    },
+    {
+      "id": "Q02",
+      "group": "Deterministic / fast-path",
+      "question": "Liệt kê các mục chi tiêu nhiều nhất tháng này",
+      "note": "",
+      "started_at": "2026-06-27T13:25:42.529311",
+      "answer": "Trong tháng 6/2026, mình chưa thấy giao dịch nào.",
+      "debug": {
+        "intent": "SPENDING_BREAKDOWN",
+        "tool_calls": [
+          {
+            "tool_name": "get_account_summary",
+            "arguments": {
+              "scope": "cycle",
+              "date_from": "2026-06-01",
+              "date_to": "2026-07-01"
+            },
+            "status": "success",
+            "error": null
+          }
+        ],
+        "confirmation": null,
+        "debug": {
+          "finalizer": {
+            "used": true,
+            "model": "gpt-4o-mini"
+          }
+        }
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 3.93,
+      "status": "PASS",
+      "issues": []
+    },
+    {
+      "id": "Q03",
+      "group": "Deterministic / fast-path",
+      "question": "Trung bình chi tiêu 3 tháng gần đây là bao nhiêu?",
+      "note": "Phải dùng average route, chia đúng cho 3 tháng",
+      "started_at": "2026-06-27T13:25:48.938722",
+      "answer": "Trong 3 tháng gần đây, mình chưa thấy giao dịch nào để tính trung bình.",
+      "debug": {
+        "intent": "SPENDING_BREAKDOWN",
+        "tool_calls": [
+          {
+            "tool_name": "get_account_summary",
+            "arguments": {
+              "scope": "cycle",
+              "date_from": "2026-04-01",
+              "date_to": "2026-07-01"
+            },
+            "status": "success",
+            "error": null
+          }
+        ],
+        "confirmation": null,
+        "debug": {
+          "finalizer": {
+            "used": true,
+            "model": "gpt-4o-mini"
+          }
+        }
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 4.46,
+      "status": "PASS",
+      "issues": []
+    },
+    {
+      "id": "Q04",
+      "group": "Deterministic / fast-path",
+      "question": "So sánh chi tiêu tháng này với tháng trước",
+      "note": "",
+      "started_at": "2026-06-27T13:25:55.884977",
+      "answer": "So với kỳ trước, kỳ hiện tại chi bằng 0 VND.\n\nChi kỳ hiện tại: 0 VND; kỳ trước: 0 VND.\n\n*Lưu ý: Đây là phân tích ước tính dựa trên dữ liệu giao dịch hiện có, không phải tư vấn tài chính chuyên nghiệp.*",
+      "debug": {
+        "intent": "SPENDING_BREAKDOWN",
+        "tool_calls": [
+          {
+            "tool_name": "compare_period_spending",
+            "arguments": {
+              "period_a_from": "2026-06-01",
+              "period_a_to": "2026-06-28",
+              "period_b_from": "2026-05-01",
+              "period_b_to": "2026-06-01"
+            },
+            "status": "success",
+            "error": null
+          }
+        ],
+        "confirmation": null,
+        "debug": {
+          "model": "fast_path",
+          "finalizer": {
+            "used": true,
+            "model": "gpt-4o-mini"
+          }
+        }
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 11.14,
+      "status": "PASS",
+      "issues": []
+    },
+    {
+      "id": "Q05",
+      "group": "Forecast & health",
+      "question": "Cuối tháng tôi còn khoảng bao nhiêu tiền?",
+      "note": "",
+      "started_at": "2026-06-27T13:26:09.485749",
+      "answer": "Dựa trên tốc độ chi tiêu hiện tại, số dư cuối tháng của bạn được ước tính còn khoảng 497,082,133 VND.\n\n \n\nMột vài điểm cần lưu ý:\n\n- Chi tiêu trung bình mỗi ngày hiện khoảng 825,068 VND.\n\n- Còn 3 ngày trong tháng.\n\n- Xu hướng chi tiêu hiện tại: giảm.\n\n \n\nTốc độ chi tiêu hiện tại tương đối ổn định.\n\n \n\nĐây chỉ là ước tính, con số thực tế có thể thay đổi nếu bạn có khoản chi lớn hoặc thu nhập phát sinh.",
+      "debug": {
+        "intent": "FORECAST_BALANCE",
+        "tool_calls": [
+          {
+            "tool_name": "get_balance_forecast",
+            "arguments": {
+              "scope": "current_month"
+            },
+            "status": "success",
+            "error": null
+          }
+        ],
+        "confirmation": null,
+        "debug": {
+          "finalizer": {
+            "used": true,
+            "model": "gpt-4o-mini"
+          }
+        }
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 5.48,
+      "status": "PASS",
+      "issues": []
+    },
+    {
+      "id": "Q06",
+      "group": "Forecast & health",
+      "question": "Tài chính của tôi có ổn không?",
+      "note": "",
+      "started_at": "2026-06-27T13:26:17.431318",
+      "answer": "Tình hình tài chính của bạn có điểm sức khỏe tài chính từ 01 tháng 6 năm 2026 đến 30 tháng 6 năm 2026 là 68/100 - Trung bình khá.\n\n \n\nĐiểm tốt:\n\n- Rủi ro bất thường đang ổn.\n\n- Rủi ro dự báo đang ổn.\n\n \n\nGợi ý cải thiện:\n\n1. Tiếp tục theo dõi chi tiêu và giữ mức tiết kiệm hiện tại.\n\n \n\nDữ liệu còn thiếu: category_balance, income, savings_rate.\n\n \n\nLưu ý: Điểm này chỉ là công cụ tham khảo để quản lý chi tiêu và dòng tiền cá nhân, không phải điểm tín dụng hay tư vấn tài chính chuyên nghiệp.",
+      "debug": {
+        "intent": "FINANCIAL_HEALTH_SCORE",
+        "tool_calls": [
+          {
+            "tool_name": "get_financial_health_score",
+            "arguments": {
+              "scope": "cycle",
+              "refresh": false
+            },
+            "status": "success",
+            "error": null
+          }
+        ],
+        "confirmation": null,
+        "debug": {
+          "finalizer": {
+            "used": true,
+            "model": "gpt-4o-mini"
+          }
+        }
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 6.99,
+      "status": "PASS",
+      "issues": []
+    },
+    {
+      "id": "Q07",
+      "group": "Forecast & health",
+      "question": "Có khoản chi tiêu nào bất thường không?",
+      "note": "",
+      "started_at": "2026-06-27T13:26:26.875943",
+      "answer": "Mình chưa tìm thấy khoản chi tiêu bất thường nào trong phạm vi hiện tại. Nếu bạn vừa kết nối ngân hàng, hãy thử lại sau khi dữ liệu được đồng bộ.",
+      "debug": {
+        "intent": "ANOMALY_EXPLANATION",
+        "tool_calls": [
+          {
+            "tool_name": "get_anomalies",
+            "arguments": {
+              "scope": "cycle"
+            },
+            "status": "success",
+            "error": null
+          }
+        ],
+        "confirmation": null,
+        "debug": {
+          "model": "fast_path",
+          "finalizer": {
+            "used": true,
+            "model": "gpt-4o-mini"
+          }
+        }
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 7.0,
+      "status": "PASS",
+      "issues": []
+    },
+    {
+      "id": "Q08",
+      "group": "Budget",
+      "question": "Tôi có đang vượt ngân sách không?",
+      "note": "",
+      "started_at": "2026-06-27T13:26:36.368226",
+      "answer": "Bạn không vượt ngân sách.\n\n \n\nTổng ngân sách hiện tại: 0 VND.\n\nĐã chi: 0 VND.\n\n \n\nHiện chưa thấy danh mục nào vượt ngân sách theo dữ liệu hiện có.\n\n \n\nĐây là ước tính dựa trên tốc độ chi tiêu hiện tại. Lưu ý rằng đây là gợi ý quản lý ngân sách dựa trên dữ liệu hiện có, không phải tư vấn tài chính chuyên nghiệp. Dự báo ngân sách dựa trên tốc độ chi tiêu hiện tại và có thể thay đổi.\n\n \n\nLưu ý: đây là phân tích và gợi ý quản lý tài chính cá nhân mang tính chất tham khảo, không phải tư vấn tài chính chuyên nghiệp.",
+      "debug": {
+        "intent": "SAVING_SUGGESTION",
+        "tool_calls": [
+          {
+            "tool_name": "get_budget_status",
+            "arguments": {
+              "scope": "cycle"
+            },
+            "status": "success",
+            "error": null
+          }
+        ],
+        "confirmation": null,
+        "debug": {
+          "finalizer": {
+            "used": true,
+            "model": "gpt-4o-mini"
+          }
+        }
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 5.99,
+      "status": "PASS",
+      "issues": []
+    },
+    {
+      "id": "Q09",
+      "group": "Budget",
+      "question": "Lên kế hoạch chi tiêu cho từng mục với lương 8 triệu tháng sau",
+      "note": "monthly_income phải = 8000000, không nhầm với target_savings",
+      "started_at": "2026-06-27T13:26:44.819815",
+      "answer": "Dựa trên dữ liệu hiện có, mình đề xuất ngân sách kỳ này như sau:\n\n \n\nThu nhập: 8,000,000 VND; mục tiết kiệm mục tiêu: 1,200,000 VND.\n\n \n\n- Giải trí: 544,000 VND (thấp)\n\n- Khác: 544,000 VND (thấp)\n\n- Mua sắm: 680,000 VND (thấp)\n\n- Di chuyển: 816,000 VND (thấp)\n\n- Nhà ở: 1,496,000 VND (thấp)\n\n- Ăn uống: 2,040,000 VND (thấp)\n\n- Điện nước: 680,000 VND (khó)\n\n \n\nBước tiếp theo:\n\n1. Đặt ngân sách Giải trí khoảng 544,000 VND.\n\n2. Đặt ngân sách Khác khoảng 544,000 VND.\n\n3. Đặt ngân sách Mua sắm khoảng 680,000 VND.\n\n \n\nBạn có muốn mình áp dụng kế hoạch ngân sách này không? Đây là gợi ý quản lý ngân sách, không phải tư vấn tài chính chuyên nghiệp.\n\n \n\nLưu ý: đây là phân tích và gợi ý quản lý tài chính cá nhân mang tính chất tham khảo, không phải tư vấn tài chính chuyên nghiệp.",
+      "debug": {
+        "intent": "SAVING_SUGGESTION",
+        "tool_calls": [
+          {
+            "tool_name": "recommend_budget_plan",
+            "arguments": {
+              "monthly_income": 8000000
+            },
+            "status": "success",
+            "error": null
+          }
+        ],
+        "confirmation": null,
+        "debug": {
+          "model": "fast_path",
+          "finalizer": {
+            "used": true,
+            "model": "gpt-4o-mini"
+          }
+        }
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 10.06,
+      "status": "PASS",
+      "issues": []
+    },
+    {
+      "id": "Q10",
+      "group": "Savings goals",
+      "question": "Tôi đang có mục tiêu tiết kiệm nào?",
+      "note": "",
+      "started_at": "2026-06-27T13:26:57.327298",
+      "answer": "Mình chưa thấy mục tiêu tiết kiệm nào đang hoạt động. Bạn có thể tạo một mục tiêu mới, ví dụ tiết kiệm 20 triệu trong 6 tháng.\n\n \n\nLưu ý: đây là phân tích và gợi ý quản lý tài chính cá nhân mang tính chất tham khảo, không phải tư vấn tài chính chuyên nghiệp.",
+      "debug": {
+        "intent": "SAVING_SUGGESTION",
+        "tool_calls": [
+          {
+            "tool_name": "get_savings_goals",
+            "arguments": {},
+            "status": "success",
+            "error": null
+          }
+        ],
+        "confirmation": null,
+        "debug": {
+          "model": "fast_path",
+          "finalizer": {
+            "used": true,
+            "model": "gpt-4o-mini"
+          }
+        }
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 5.99,
+      "status": "PASS",
+      "issues": []
+    },
+    {
+      "id": "Q11",
+      "group": "Savings goals",
+      "question": "Tôi muốn tiết kiệm 20 triệu trong 6 tháng, có khả thi không?",
+      "note": "",
+      "started_at": "2026-06-27T13:27:05.771795",
+      "answer": "Để tiết kiệm 20,000,000 VND trước ngày 27 tháng 12 năm 2026, bạn cần để dành khoảng 3,333,333 VND mỗi tháng.\n\n \n\nĐánh giá: thiếu dữ liệu - Chưa có đủ dữ liệu thu nhập/dòng tiền để đánh giá chắc chắn.\n\n \n\nBước tiếp theo:\n\n1. Đặt mục tiêu tiết kiệm khoảng 3,333,333 VND/tháng.\n\n2. Kiểm tra tiến độ sau 30 ngày.\n\n \n\nBạn có muốn mình tạo mục tiêu này để theo dõi không? Lưu ý: đây là ước tính dựa trên dữ liệu hiện có, không phải tư vấn tài chính chuyên nghiệp.\n\n \n\nLưu ý: đây là phân tích và gợi ý quản lý tài chính cá nhân mang tính chất tham khảo, không phải tư vấn tài chính chuyên nghiệp.",
+      "debug": {
+        "intent": "SAVING_SUGGESTION",
+        "tool_calls": [
+          {
+            "tool_name": "plan_savings_goal",
+            "arguments": {
+              "name": "Tiết kiệm 20,000,000 VND trong 6 tháng",
+              "target_amount": 20000000,
+              "current_amount": 0,
+              "target_date": "2026-12-27",
+              "currency": "VND"
+            },
+            "status": "success",
+            "error": null
+          }
+        ],
+        "confirmation": null,
+        "debug": {
+          "finalizer": {
+            "used": true,
+            "model": "gpt-4o-mini"
+          }
+        }
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 6.0,
+      "status": "PASS",
+      "issues": []
+    },
+    {
+      "id": "Q12",
+      "group": "Multi-intent",
+      "question": "6 tháng gần nhất tôi chi tiêu bao nhiêu và tài chính của tôi hiện tại có ổn không?",
+      "note": "Phải gọi 2 tools, tổng hợp 2 ý",
+      "started_at": "2026-06-27T13:27:14.243087",
+      "answer": "1. Trong 6 tháng gần nhất, bạn đã chi tiêu tổng cộng 0.0. Điều này có thể do không có hoạt động chi tiêu nào trong khoảng thời gian này.\n\n \n\n2. Tình hình tài chính hiện tại của bạn có điểm số sức khỏe tài chính là 68, được đánh giá là \"Trung bình khá\". Điểm số này được tính dựa trên các yếu tố như dòng tiền ròng, kiểm soát chi tiêu và rủi ro bất thường.\n\n \n\n- **Điểm mạnh**: Rủi ro bất thường và rủi ro dự báo đang ổn định.\n\n- **Rủi ro**: Không có dữ liệu về tỷ lệ tiết kiệm và chi tiêu theo danh mục.\n\n- **Hành động khuyến nghị**: Tiếp tục theo dõi chi tiêu và giữ mức tiết kiệm hiện tại.\n\n \n\nĐiểm số này chỉ là một công cụ tham khảo cho việc quản lý chi tiêu và dòng tiền cá nhân, không phải là tư vấn tài chính chuyên nghiệp.",
+      "debug": {
+        "intent": "SPENDING_BREAKDOWN",
+        "tool_calls": [
+          {
+            "tool_name": "compare_period_spending",
+            "arguments": {
+              "period_a_from": "2026-01-01",
+              "period_a_to": "2026-06-01",
+              "period_b_from": "2026-06-01",
+              "period_b_to": "2026-06-28"
+            },
+            "status": "success",
+            "error": null
+          },
+          {
+            "tool_name": "get_financial_health_score",
+            "arguments": {},
+            "status": "success",
+            "error": null
+          }
+        ],
+        "confirmation": null,
+        "debug": {
+          "model": "gpt-4o-mini"
+        }
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 12.13,
+      "status": "FAIL",
+      "issues": [
+        "Expected tool(s) not called: ['get_account_summary'] (got: ['compare_period_spending', 'get_financial_health_score'])"
+      ]
+    },
+    {
+      "id": "Q13",
+      "group": "Multi-intent",
+      "question": "Tháng này tôi tiêu nhiều nhất vào đâu và cuối tháng tôi còn lại bao nhiêu?",
+      "note": "Multi-intent: spending breakdown + forecast",
+      "started_at": "2026-06-27T13:27:28.840183",
+      "answer": "Trong tháng 6/2026, mình chưa thấy giao dịch nào.",
+      "debug": {
+        "intent": "SPENDING_BREAKDOWN",
+        "tool_calls": [
+          {
+            "tool_name": "get_account_summary",
+            "arguments": {
+              "scope": "cycle",
+              "date_from": "2026-06-01",
+              "date_to": "2026-07-01"
+            },
+            "status": "success",
+            "error": null
+          }
+        ],
+        "confirmation": null,
+        "debug": {
+          "finalizer": {
+            "used": true,
+            "model": "gpt-4o-mini"
+          }
+        }
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 4.45,
+      "status": "FAIL",
+      "issues": [
+        "Expected tool(s) not called: ['get_balance_forecast'] (got: ['get_account_summary'])"
+      ]
+    },
+    {
+      "id": "Q14",
+      "group": "Write / confirmation flow",
+      "question": "Hủy mục tiêu tiết kiệm của tôi",
+      "note": "Phải tạo 2-step plan: get_savings_goals rồi archive_savings_goal với ID thật",
+      "started_at": "2026-06-27T13:27:35.760605",
+      "answer": "Mình chưa thấy mục tiêu tiết kiệm nào đang hoạt động. Bạn có thể tạo một mục tiêu mới, ví dụ tiết kiệm 20 triệu trong 6 tháng.\n\n \n\nLưu ý: đây là phân tích và gợi ý quản lý tài chính cá nhân mang tính chất tham khảo, không phải tư vấn tài chính chuyên nghiệp.",
+      "debug": {
+        "intent": "SAVING_SUGGESTION",
+        "tool_calls": [
+          {
+            "tool_name": "get_savings_goals",
+            "arguments": {},
+            "status": "success",
+            "error": null
+          }
+        ],
+        "confirmation": null,
+        "debug": {
+          "model": "fast_path",
+          "finalizer": {
+            "used": true,
+            "model": "gpt-4o-mini"
+          }
+        }
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 6.49,
+      "status": "FAIL",
+      "issues": [
+        "Expected confirmation card — not shown"
+      ]
+    },
+    {
+      "id": "Q15",
+      "group": "No-tool / general knowledge",
+      "question": "Nguyên tắc 50/30/20 là gì?",
+      "note": "Trả lời từ kiến thức chung, không cần tool",
+      "started_at": "2026-06-27T13:27:44.710943",
+      "answer": "Nguyên tắc 50/30/20 là một phương pháp quản lý tài chính cá nhân giúp phân bổ thu nhập của bạn một cách hợp lý. Theo nguyên tắc này, bạn nên dành 50% thu nhập cho nhu cầu thiết yếu (như thực phẩm, nhà ở, và các chi phí cơ bản khác), 30% cho nhu cầu mong muốn (như giải trí, du lịch, và sở thích cá nhân), và 20% cho tiết kiệm và đầu tư.",
+      "debug": {
+        "intent": "UNKNOWN",
+        "tool_calls": [],
+        "confirmation": null,
+        "debug": null
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 7.0,
+      "status": "PASS",
+      "issues": []
+    },
+    {
+      "id": "Q16",
+      "group": "No-tool / general knowledge",
+      "question": "Quỹ khẩn cấp nên bằng mấy tháng chi tiêu?",
+      "note": "",
+      "started_at": "2026-06-27T13:27:54.165364",
+      "answer": "Quỹ khẩn cấp hiện tại ước tính bao phủ chưa tính được chi phí thiết yếu.\n\n \n\nChi phí thiết yếu mỗi tháng ước tính: 0 VND.\n\nMục tiêu 3 tháng cần khoảng 0 VND; còn thiếu khoảng 0 VND.\n\n \n\nTrạng thái: không đủ.\n\nLưu ý: Đây là phân tích ước tính dựa trên dữ liệu giao dịch hiện có, không phải tư vấn tài chính chuyên nghiệp. Quỹ khẩn cấp được ước tính từ số dư hiện tại và chi phí thiết yếu trong lịch sử giao dịch.\n\n \n\nLưu ý: đây là phân tích và gợi ý quản lý tài chính cá nhân mang tính chất tham khảo, không phải tư vấn tài chính chuyên nghiệp.",
+      "debug": {
+        "intent": "SAVING_SUGGESTION",
+        "tool_calls": [
+          {
+            "tool_name": "get_emergency_fund_status",
+            "arguments": {
+              "months_target": 3
+            },
+            "status": "success",
+            "error": null
+          }
+        ],
+        "confirmation": null,
+        "debug": {
+          "finalizer": {
+            "used": true,
+            "model": "gpt-4o-mini"
+          }
+        }
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 5.47,
+      "status": "PASS",
+      "issues": []
+    },
+    {
+      "id": "Q17",
+      "group": "Out of scope guard",
+      "question": "Tôi nên mua cổ phiếu nào tốt nhất hiện nay?",
+      "note": "InvestmentAdvice guard phải chặn",
+      "started_at": "2026-06-27T13:28:02.096211",
+      "answer": "Minh khong the dua ra khuyen nghi mua, ban hoac nam giu co phieu, crypto hay san pham dau tu. Minh co the giup ban xem ngan sach, dong tien va thoi quen tiet kiem.",
+      "debug": {
+        "intent": "OUT_OF_SCOPE_INVESTMENT_ADVICE",
+        "tool_calls": [],
+        "confirmation": null,
+        "debug": null
+      },
+      "has_confirmation": false,
+      "has_error_ui": false,
+      "latency_s": 2.42,
+      "status": "PASS",
+      "issues": []
+    }
+  ]
+}
