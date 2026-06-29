@@ -6,10 +6,36 @@ import unicodedata
 from datetime import date
 from typing import Any
 
+from spectra.categories import (
+    ENTERTAINMENT,
+    FOOD,
+    HOUSING,
+    OTHER,
+    SHOPPING,
+    TRANSPORT,
+    UTILITIES,
+)
+
 LIMITATION = "Day la goi y quan ly ngan sach dua tren du lieu hien co, khong phai tu van tai chinh chuyen nghiep."
 
 FIXED_CATEGORIES = {"nha cua", "tien thue nha", "hoa don", "tra no", "giao duc", "suc khoe", "bao hiem", "dien nuoc"}
 FLEXIBLE_CATEGORIES = {"an uong", "ca phe", "dat do an", "mua sam", "giai tri", "subscriptions", "khac", "dich vu"}
+
+# Minimum number of historical spending categories before we trust history-based
+# allocation. Below this we fall back to a standard template so new users still get
+# a multi-category plan instead of a single-category one.
+MIN_HISTORY_CATEGORIES = 3
+
+# Standard split of the spend-able amount across typical categories. Shares sum to 1.0.
+BUDGET_TEMPLATE_SHARES: tuple[tuple[str, float], ...] = (
+    (FOOD, 0.30),
+    (HOUSING, 0.22),
+    (TRANSPORT, 0.12),
+    (SHOPPING, 0.10),
+    (UTILITIES, 0.10),
+    (ENTERTAINMENT, 0.08),
+    (OTHER, 0.08),
+)
 
 
 def get_budget_status_for_chat(
@@ -82,6 +108,7 @@ def recommend_budget_plan(
     *,
     scope: str = "cycle",
     target_savings_amount: float | None = None,
+    monthly_income: float | None = None,
     goal_id: str | None = None,
     summary_payload: dict[str, Any] | None = None,
     budget_payload: dict[str, Any] | None = None,
@@ -93,43 +120,61 @@ def recommend_budget_plan(
     budget = budget_payload or {"items": []}
     goals = list((goals_payload or {}).get("goals") or [])
     currency = str(summary.get("currency") or summary.get("base_currency") or "VND")
-    income = _as_float(summary.get("total_income"))
+    # A user-stated monthly income (e.g. "lương 8tr") overrides the income derived
+    # from transaction history, which is often 0 for new users.
+    stated_income = _as_float(monthly_income)
+    income = stated_income if stated_income > 0 else _as_float(summary.get("total_income"))
+    income_source = "user_stated" if stated_income > 0 else "transactions"
     total_spent = _as_float(summary.get("total_spent"))
     by_category = {str(k): abs(_as_float(v)) for k, v in (summary.get("by_category") or {}).items()}
     budget_by_cat = {str(item.get("category")): _as_float(item.get("limit")) for item in budget.get("items") or []}
     target_savings = _target_savings(target_savings_amount, goals, income)
     available = max(income - target_savings, 0) if income > 0 else 0
-    recommendations = []
-    total_basis = sum(by_category.values()) or total_spent
-    for category, spend in sorted(by_category.items(), key=lambda item: -item[1]):
-        share = (spend / total_basis) if total_basis > 0 else 0
-        adjusted_share = _adjusted_share(category, share)
-        recommended = available * adjusted_share if available > 0 else max(spend * 0.9, 0)
-        if _is_fixed(category):
-            recommended = max(recommended, spend * 0.9)
-        else:
-            recommended = max(recommended, spend * 0.65)
-        current_budget = budget_by_cat.get(category) or 0
-        change_base = current_budget if current_budget > 0 else spend
-        recommendations.append(
-            {
-                "category": category,
-                "current_spend": round(spend, 2),
-                "current_budget": round(current_budget, 2) if current_budget else None,
-                "recommended_budget": round(recommended, 2),
-                "suggested_change": round(recommended - change_base, 2),
-                "difficulty": _difficulty(category, recommended, spend),
-                "reason": _recommendation_reason(category),
-            }
-        )
+
+    # Fall back to a standard template when there is too little spending history to
+    # build a meaningful per-category plan (otherwise the plan covers only the one or
+    # two categories the user has spent in).
+    if available > 0 and len(by_category) < MIN_HISTORY_CATEGORIES:
+        recommendations = _template_recommendations(available, by_category, budget_by_cat)
+        strategy = "template_budget"
+    else:
+        recommendations = []
+        total_basis = sum(by_category.values()) or total_spent
+        for category, spend in sorted(by_category.items(), key=lambda item: -item[1]):
+            share = (spend / total_basis) if total_basis > 0 else 0
+            adjusted_share = _adjusted_share(category, share)
+            recommended = available * adjusted_share if available > 0 else max(spend * 0.9, 0)
+            if _is_fixed(category):
+                recommended = max(recommended, spend * 0.9)
+            else:
+                recommended = max(recommended, spend * 0.65)
+            current_budget = budget_by_cat.get(category) or 0
+            change_base = current_budget if current_budget > 0 else spend
+            recommendations.append(
+                {
+                    "category": category,
+                    "current_spend": round(spend, 2),
+                    "current_budget": round(current_budget, 2) if current_budget else None,
+                    "recommended_budget": round(recommended, 2),
+                    "suggested_change": round(recommended - change_base, 2),
+                    "difficulty": _difficulty(category, recommended, spend),
+                    "reason": _recommendation_reason(category),
+                }
+            )
+        strategy = "goal_aware_budget"
+
     recommendations.sort(key=lambda item: (_is_fixed(str(item["category"])), item["suggested_change"]))
     estimated_saving = sum(max(_as_float(item["current_spend"]) - _as_float(item["recommended_budget"]), 0) for item in recommendations)
+    limitations = [LIMITATION]
+    if strategy == "template_budget":
+        limitations.append("Ke hoach chia theo mau ngan sach chuan vi chua du lich su chi tieu cua ban.")
     return {
         "scope": scope,
-        "strategy": "goal_aware_budget",
+        "strategy": strategy,
         "currency": currency,
         "summary": {
             "total_income": round(income, 2),
+            "income_source": income_source,
             "target_savings": round(target_savings, 2),
             "available_for_spending": round(available, 2),
             "confidence": "medium" if income > 0 else "low",
@@ -143,8 +188,35 @@ def recommend_budget_plan(
         "risks": _recommendation_risks(recommendations),
         "next_actions": _budget_next_actions(recommendations, currency),
         "missing_data": [] if income > 0 else ["income"],
-        "limitations": [LIMITATION],
+        "limitations": limitations,
     }
+
+
+def _template_recommendations(
+    available: float,
+    by_category: dict[str, float],
+    budget_by_cat: dict[str, float],
+) -> list[dict[str, Any]]:
+    """Allocate *available* across a standard category template (history too sparse)."""
+    history_by_fold = {_fold(name): amount for name, amount in by_category.items()}
+    recommendations: list[dict[str, Any]] = []
+    for category, share in BUDGET_TEMPLATE_SHARES:
+        recommended = available * share
+        spend = history_by_fold.get(_fold(category), 0.0)
+        current_budget = budget_by_cat.get(category) or 0
+        change_base = current_budget if current_budget > 0 else spend
+        recommendations.append(
+            {
+                "category": category,
+                "current_spend": round(spend, 2),
+                "current_budget": round(current_budget, 2) if current_budget else None,
+                "recommended_budget": round(recommended, 2),
+                "suggested_change": round(recommended - change_base, 2),
+                "difficulty": _difficulty(category, recommended, spend),
+                "reason": "Phan bo theo mau ngan sach chuan vi chua du lich su chi tieu.",
+            }
+        )
+    return recommendations
 
 
 def simulate_budget_adjustment(

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from spectra.chat.tools import get_tool
 from spectra.chat.confirmation import pending_actions
+from spectra.chat.guardrails.scopes import resolve_granted_scopes
 
 
 class ToolGuardResult:
@@ -12,6 +13,32 @@ class ToolGuardResult:
         self.passed = passed
         self.reason = reason
         self.status = status
+
+
+class ScopeGuard:
+    """Enforce each tool's declared ``required_scope`` against the caller's grants.
+
+    Fail closed: a tool whose required scope is not granted to the user is
+    rejected, even if it passed every other guard.
+    """
+
+    def check(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        user_id: str | None,
+    ) -> ToolGuardResult:
+        tool = get_tool(tool_name)
+        if not tool:
+            return ToolGuardResult(False, "Tool is not registered for the chatbot.", status="rejected")
+        granted = resolve_granted_scopes(user_id)
+        if tool.required_scope not in granted:
+            return ToolGuardResult(
+                False,
+                "You do not have permission to use this tool.",
+                status="rejected",
+            )
+        return ToolGuardResult(True)
 
 
 class UnregisteredToolGuard:
@@ -61,6 +88,7 @@ class ToolParameterGuard:
             "simulate_purchase_impact",
             "get_debt_summary",
             "get_emergency_fund_status",
+            "get_peer_benchmark",
             "get_conversation_context",
             "get_user_memories",
             "remember_user_preference",

@@ -244,6 +244,12 @@ class ToolExecutor:
                 return self._get_debt_summary(arguments)
             elif tool_name == "get_emergency_fund_status":
                 return self._get_emergency_fund_status(arguments)
+            elif tool_name == "get_peer_benchmark":
+                return self._get_peer_benchmark(arguments)
+            elif tool_name == "get_spending_patterns":
+                return self._get_spending_patterns(arguments)
+            elif tool_name == "simulate_income_change":
+                return self._simulate_income_change(arguments)
             elif tool_name == "get_conversation_context":
                 return self._get_conversation_context(arguments)
             elif tool_name == "get_user_memories":
@@ -613,6 +619,7 @@ class ToolExecutor:
             scope=scope,
             goal_id=str(arguments.get("goal_id") or "") or None,
             target_savings_amount=arguments.get("target_savings_amount"),
+            monthly_income=arguments.get("monthly_income"),
             summary_payload=summary,
             budget_payload=budget,
             goals_payload=goals,
@@ -730,6 +737,33 @@ class ToolExecutor:
             self.user_id,
             months_target=arguments.get("months_target") or 3,
             forecast_payload=self._get_balance_forecast({}),
+        )
+
+    def _simulate_income_change(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        from spectra.chat.insight_tools import simulate_income_change
+
+        return simulate_income_change(
+            self.user_id,
+            income_delta=float(arguments.get("income_delta") or 0),
+            scope=str(arguments.get("scope") or "cycle"),
+        )
+
+    def _get_peer_benchmark(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        from spectra.chat.insight_tools import get_peer_benchmark
+
+        return get_peer_benchmark(
+            self.user_id,
+            scope=str(arguments.get("scope") or "90d"),
+            monthly_income_override=arguments.get("monthly_income_override"),
+        )
+
+    def _get_spending_patterns(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        from spectra.chat.insight_tools import get_spending_patterns
+
+        return get_spending_patterns(
+            self.user_id,
+            scope=str(arguments.get("scope") or "90d"),
+            group_by=str(arguments.get("group_by") or "weekday"),
         )
 
     def _get_conversation_context(self, arguments: dict[str, Any]) -> dict[str, Any]:

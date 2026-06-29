@@ -3,16 +3,50 @@
 from __future__ import annotations
 
 import unicodedata
+import zoneinfo
 from collections import Counter, defaultdict
-from datetime import date, timedelta
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from statistics import median
 from typing import Any
+
+@dataclass
+class ComparisonPeriods:
+    period_a_start: date
+    period_a_end: date      # exclusive
+    period_b_start: date
+    period_b_end: date      # exclusive
+    was_swapped: bool       # để log/debug
+    was_aligned: bool       # period_b có bị truncate không
+    limitations: list[str]  # warnings
+
+
+def get_today_in_user_timezone(tz_str: str = "Asia/Ho_Chi_Minh") -> date:
+    """Lấy ngày hiện tại theo timezone của user, không phải server UTC."""
+    return datetime.now(zoneinfo.ZoneInfo(tz_str)).date()
 
 LIMITATION = "Day la phan tich uoc tinh dua tren du lieu giao dich hien co, khong phai tu van tai chinh chuyen nghiep."
 DEBT_LIMITATION = (
     "Day chi la cac khoan thanh toan co dau hieu lien quan den no/tra gop; he thong chua co du lieu du no con lai."
 )
 CASHFLOW_LIMITATION = "Lich dong tien la uoc tinh tu giao dich dinh ky va toc do chi tieu gan day."
+PEER_BENCHMARK_LIMITATION = (
+    "Chuan tham chieu la huong dan chung (quy tac 50/30/20 va muc ky vong theo nhom thu nhap), "
+    "khong phai du lieu thuc te tu nguoi dung khac. Spectra khong thu thap du lieu nhan khau hoc."
+)
+
+# 50/30/20 baseline + muc ky vong dieu chinh theo nhom thu nhap (thu nhap thang, VND).
+# Day la huong dan chung cho ho gia dinh Viet Nam, KHONG suy ra tu du lieu nguoi dung khac.
+# Nhom thu nhap cao hon duoc ky vong tiet kiem ty le lon hon.
+PEER_BENCHMARK_RULE = {"needs_pct": 50.0, "wants_pct": 30.0, "savings_pct": 20.0}
+PEER_INCOME_BRACKETS: list[tuple[str, float, float, float, float]] = [
+    # (label, nguong tren (exclusive), needs_pct, wants_pct, savings_pct)
+    ("Thu nhap thap (duoi 10 trieu/thang)", 10_000_000, 60.0, 30.0, 10.0),
+    ("Thu nhap trung binh thap (10-20 trieu/thang)", 20_000_000, 55.0, 30.0, 15.0),
+    ("Thu nhap trung binh (20-40 trieu/thang)", 40_000_000, 50.0, 30.0, 20.0),
+    ("Thu nhap kha (tren 40 trieu/thang)", float("inf"), 45.0, 30.0, 25.0),
+]
+PEER_BENCHMARK_TOLERANCE_PCT = 5.0
 
 ESSENTIAL_CATEGORIES = {
     "nha o",
@@ -70,11 +104,25 @@ def compare_period_spending(
     period_b_from: str = "",
     period_b_to: str = "",
 ) -> dict[str, Any]:
-    period_a, period_b = _comparison_periods(period_a_from, period_a_to, period_b_from, period_b_to)
+    comp = _comparison_periods(period_a_from, period_a_to, period_b_from, period_b_to)
+    period_a = (comp.period_a_start, comp.period_a_end)
+    period_b = (comp.period_b_start, comp.period_b_end)
+    
     # Fetch once from app history to support user scoping in one place.
     rows = _transaction_rows_for_periods(user_id, period_a, period_b)
     a = _aggregate_period(rows, period_a)
     b = _aggregate_period(rows, period_b)
+    
+    # spent delta pct and label
+    spent_delta_pct, spent_delta_pct_label = _pct_delta_with_label(a["total_spent"], b["total_spent"])
+    # income delta pct and label
+    income_delta_pct, income_delta_pct_label = _pct_delta_with_label(a["total_income"], b["total_income"])
+    
+    # We combine limitations
+    all_limitations = list(comp.limitations)
+    if not a["transaction_count"] and not b["transaction_count"]:
+        all_limitations.append(LIMITATION)
+        
     return {
         "period_a": {**_period_payload(period_a), "label": "current"},
         "period_b": {**_period_payload(period_b), "label": "previous"},
@@ -82,15 +130,18 @@ def compare_period_spending(
             "period_a_spent": a["total_spent"],
             "period_b_spent": b["total_spent"],
             "spent_delta": round(a["total_spent"] - b["total_spent"], 2),
-            "spent_delta_pct": _pct_delta(a["total_spent"], b["total_spent"]),
+            "spent_delta_pct": spent_delta_pct,
+            "spent_delta_pct_label": spent_delta_pct_label,
             "period_a_income": a["total_income"],
             "period_b_income": b["total_income"],
             "income_delta": round(a["total_income"] - b["total_income"], 2),
+            "income_delta_pct": income_delta_pct,
+            "income_delta_pct_label": income_delta_pct_label,
             "transaction_count_delta": a["transaction_count"] - b["transaction_count"],
         },
         "category_deltas": _deltas(a["by_category"], b["by_category"], key_name="category"),
         "merchant_deltas": _deltas(a["by_merchant"], b["by_merchant"], key_name="merchant"),
-        "limitations": [LIMITATION] if not a["transaction_count"] and not b["transaction_count"] else [],
+        "limitations": all_limitations,
     }
 
 
@@ -157,7 +208,7 @@ def explain_budget_overrun(
 
 def get_cashflow_calendar(user_id: str, *, days: int = 30, forecast_payload: dict[str, Any] | None = None) -> dict[str, Any]:
     safe_days = _clamp_int(days, default=30, minimum=7, maximum=45)
-    today = date.today()
+    today = get_today_in_user_timezone()
     forecast = forecast_payload or {}
     current_balance = _as_float(forecast.get("current_balance"))
     avg_daily = _as_float(forecast.get("avg_daily_spending"))
@@ -298,6 +349,280 @@ def get_emergency_fund_status(
         "gap_amount": round(gap, 2),
         "status": status,
         "limitations": [LIMITATION, "Quy khan cap duoc uoc tinh tu so du hien tai va chi phi thiet yeu trong lich su giao dich."],
+    }
+
+
+def get_peer_benchmark(
+    user_id: str,
+    *,
+    scope: str = "90d",
+    monthly_income_override: float | None = None,
+) -> dict[str, Any]:
+    """So sanh co cau chi tieu cua user voi chuan tham chieu (50/30/20 + nhom thu nhap).
+
+    Spectra khong co du lieu nguoi dung khac, nen benchmark la bang chuan tinh,
+    KHONG phai du lieu peer that. Chi tieu duoc phan thanh Needs (thiet yeu) /
+    Wants (mong muon) / Savings (tiet kiem = thu nhap - chi tieu).
+    """
+    period = _period_for_scope(scope if scope in {"cycle", "90d", "ytd"} else "90d")
+    rows = _transaction_rows_for_period(user_id, period)
+    days_in_period = max((period[1] - period[0]).days, 1)
+    months_in_period = days_in_period / 30.4375
+
+    total_income = sum(row["amount"] for row in rows if row["amount"] > 0)
+    spend_rows = [row for row in rows if row["amount"] < 0]
+    total_spent = sum(abs(row["amount"]) for row in spend_rows)
+    needs_spent = sum(abs(row["amount"]) for row in spend_rows if _fold(row["category"]) in ESSENTIAL_CATEGORIES)
+    wants_spent = max(total_spent - needs_spent, 0.0)
+
+    override = _as_float(monthly_income_override)
+    monthly_income = (
+        override if override > 0
+        else (total_income / months_in_period if months_in_period > 0 else 0.0)
+    )
+    monthly_needs = needs_spent / months_in_period if months_in_period > 0 else 0.0
+    monthly_wants = wants_spent / months_in_period if months_in_period > 0 else 0.0
+    monthly_spent = monthly_needs + monthly_wants
+    monthly_savings = monthly_income - monthly_spent
+
+    if monthly_income <= 0:
+        return {
+            "scope": _scope(scope),
+            "period": _period_payload(period),
+            "status": "insufficient_data",
+            "message": "Chua du du lieu thu nhap de so sanh voi chuan tham chieu.",
+            "limitations": [LIMITATION, PEER_BENCHMARK_LIMITATION],
+        }
+
+    actual = {
+        "needs_pct": round(monthly_needs / monthly_income * 100, 1),
+        "wants_pct": round(monthly_wants / monthly_income * 100, 1),
+        "savings_pct": round(monthly_savings / monthly_income * 100, 1),
+    }
+    bracket = _income_bracket(monthly_income)
+    benchmark = {"needs_pct": bracket[2], "wants_pct": bracket[3], "savings_pct": bracket[4]}
+
+    comparison = {
+        "needs": _benchmark_dim(actual["needs_pct"], benchmark["needs_pct"], lower_is_better=True),
+        "wants": _benchmark_dim(actual["wants_pct"], benchmark["wants_pct"], lower_is_better=True),
+        "savings": _benchmark_dim(actual["savings_pct"], benchmark["savings_pct"], lower_is_better=False),
+    }
+
+    return {
+        "scope": _scope(scope),
+        "period": _period_payload(period),
+        "income_bracket": bracket[0],
+        "monthly_income": round(monthly_income, 2),
+        "monthly_spent": round(monthly_spent, 2),
+        "monthly_savings": round(monthly_savings, 2),
+        "actual_allocation": actual,
+        "benchmark_allocation": benchmark,
+        "rule_50_30_20": PEER_BENCHMARK_RULE,
+        "comparison": comparison,
+        "overall_assessment": _benchmark_overall(comparison),
+        "suggestions": _benchmark_suggestions(actual, benchmark, comparison),
+        "limitations": [LIMITATION, PEER_BENCHMARK_LIMITATION],
+    }
+
+
+def _income_bracket(monthly_income: float) -> tuple[str, float, float, float, float]:
+    for bracket in PEER_INCOME_BRACKETS:
+        if monthly_income < bracket[1]:
+            return bracket
+    return PEER_INCOME_BRACKETS[-1]
+
+
+def _benchmark_dim(actual_pct: float, target_pct: float, *, lower_is_better: bool) -> dict[str, Any]:
+    diff = round(actual_pct - target_pct, 1)
+    if abs(diff) <= PEER_BENCHMARK_TOLERANCE_PCT:
+        status = "on_track"
+    elif (diff < 0) == lower_is_better:
+        status = "better"
+    else:
+        status = "worse"
+    return {"actual_pct": actual_pct, "target_pct": target_pct, "diff_pct": diff, "status": status}
+
+
+def _benchmark_overall(comparison: dict[str, dict[str, Any]]) -> str:
+    statuses = [dim["status"] for dim in comparison.values()]
+    worse = statuses.count("worse")
+    better = statuses.count("better")
+    if comparison["savings"]["status"] == "worse" or worse >= 2:
+        return "needs_improvement"
+    if worse == 0 and better >= 1:
+        return "good"
+    return "on_track"
+
+
+def _benchmark_suggestions(
+    actual: dict[str, float],
+    benchmark: dict[str, float],
+    comparison: dict[str, dict[str, Any]],
+) -> list[str]:
+    out: list[str] = []
+    if comparison["savings"]["status"] == "worse":
+        gap = round(benchmark["savings_pct"] - actual["savings_pct"], 1)
+        out.append(
+            f"Ty le tiet kiem ({actual['savings_pct']}%) thap hon chuan ({benchmark['savings_pct']}%) "
+            f"khoang {gap} diem. Hay dat khoan tiet kiem tu dong ngay dau thang."
+        )
+    if comparison["wants"]["status"] == "worse":
+        out.append(
+            f"Chi tieu mong muon ({actual['wants_pct']}%) cao hon chuan ({benchmark['wants_pct']}%). "
+            f"Ra soat cac khoan giai tri, an uong ngoai, mua sam co the cat giam."
+        )
+    if comparison["needs"]["status"] == "worse":
+        out.append(
+            f"Chi phi thiet yeu ({actual['needs_pct']}%) cao hon chuan ({benchmark['needs_pct']}%). "
+            f"Xem lai tien thue nha, hoa don, dich vu co the toi uu."
+        )
+    if not out:
+        out.append("Co cau chi tieu cua ban dang bam sat chuan tham chieu. Duy tri thoi quen nay.")
+    return out
+
+
+def simulate_income_change(
+    user_id: str,
+    *,
+    income_delta: float,
+    scope: str = "cycle",
+) -> dict[str, Any]:
+    """Mô phỏng thay đổi thu nhập và tác động đến dòng tiền, tỷ lệ tiết kiệm, khả năng đạt goal."""
+    from spectra.savings_goals import get_savings_goals
+
+    period = _period_for_scope(scope)
+    rows = _transaction_rows_for_period(user_id, period)
+    days_in_period = max((period[1] - period[0]).days, 1)
+    months_in_period = days_in_period / 30.4375
+
+    total_income = sum(row["amount"] for row in rows if row["amount"] > 0)
+    total_spent = sum(abs(row["amount"]) for row in rows if row["amount"] < 0)
+
+    monthly_income = total_income / months_in_period if months_in_period > 0 else 0.0
+    monthly_spent = total_spent / months_in_period if months_in_period > 0 else 0.0
+    monthly_surplus = monthly_income - monthly_spent
+
+    new_monthly_income = monthly_income + income_delta
+    new_monthly_surplus = new_monthly_income - monthly_spent
+
+    savings_rate_before = round(monthly_surplus / monthly_income * 100, 1) if monthly_income > 0 else None
+    savings_rate_after = round(new_monthly_surplus / new_monthly_income * 100, 1) if new_monthly_income > 0 else None
+
+    goals_data = get_savings_goals(user_id, status="active")
+    active_goals = list((goals_data or {}).get("goals") or [])
+    goal_monthly_required = max(
+        (_as_float(g.get("monthly_required_amount") or g.get("required_monthly_saving") or 0) for g in active_goals),
+        default=0.0,
+    )
+    goal_feasible_before = monthly_surplus >= goal_monthly_required if goal_monthly_required > 0 else None
+    goal_feasible_after = new_monthly_surplus >= goal_monthly_required if goal_monthly_required > 0 else None
+
+    return {
+        "scope": _scope(scope),
+        "period": _period_payload(period),
+        "income_delta": round(income_delta, 2),
+        "before": {
+            "monthly_income": round(monthly_income, 2),
+            "monthly_spent": round(monthly_spent, 2),
+            "monthly_surplus": round(monthly_surplus, 2),
+            "savings_rate_pct": savings_rate_before,
+        },
+        "after": {
+            "monthly_income": round(new_monthly_income, 2),
+            "monthly_spent": round(monthly_spent, 2),
+            "monthly_surplus": round(new_monthly_surplus, 2),
+            "savings_rate_pct": savings_rate_after,
+        },
+        "goal_impact": {
+            "active_goal_monthly_required": round(goal_monthly_required, 2),
+            "feasible_before": goal_feasible_before,
+            "feasible_after": goal_feasible_after,
+        } if active_goals else None,
+        "limitations": [LIMITATION, "Mô phỏng giả định chi tiêu không thay đổi khi thu nhập thay đổi."],
+    }
+
+
+def get_spending_patterns(
+    user_id: str,
+    *,
+    scope: str = "90d",
+    group_by: str = "weekday",
+) -> dict[str, Any]:
+    """Phân tích pattern chi tiêu theo thứ trong tuần hoặc ngày trong tháng."""
+    valid_group_by = {"weekday", "day_of_month", "week_of_month"}
+    if group_by not in valid_group_by:
+        group_by = "weekday"
+    period = _period_for_scope(scope if scope in {"cycle", "90d", "ytd"} else "90d")
+    rows = [row for row in _transaction_rows_for_period(user_id, period) if row["amount"] < 0]
+
+    if group_by == "weekday":
+        weekday_names = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"]
+        buckets: dict[str, dict[str, Any]] = {name: {"label": name, "total": 0.0, "count": 0, "days_seen": set()} for name in weekday_names}
+        for row in rows:
+            # weekday(): 0=Monday … 6=Sunday
+            name = weekday_names[row["date"].weekday()]
+            buckets[name]["total"] += abs(row["amount"])
+            buckets[name]["count"] += 1
+            buckets[name]["days_seen"].add(row["date"])
+        result_buckets = []
+        for name in weekday_names:
+            b = buckets[name]
+            days_count = len(b["days_seen"])
+            result_buckets.append({
+                "label": name,
+                "total": round(b["total"], 2),
+                "transaction_count": b["count"],
+                "avg_per_day": round(b["total"] / days_count, 2) if days_count > 0 else 0.0,
+            })
+        weekend_days = {"Thứ 7", "Chủ nhật"}
+        weekend_total = sum(b["total"] for n, b in buckets.items() if n in weekend_days)
+        weekend_day_count = sum(len(b["days_seen"]) for n, b in buckets.items() if n in weekend_days)
+        weekday_total = sum(b["total"] for n, b in buckets.items() if n not in weekend_days)
+        weekday_day_count = sum(len(b["days_seen"]) for n, b in buckets.items() if n not in weekend_days)
+        weekend_avg = round(weekend_total / weekend_day_count, 2) if weekend_day_count > 0 else 0.0
+        weekday_avg = round(weekday_total / weekday_day_count, 2) if weekday_day_count > 0 else 0.0
+        ratio = round(weekend_avg / weekday_avg, 2) if weekday_avg > 0 else None
+        extra = {"weekend_vs_weekday": {"weekend_avg_per_day": weekend_avg, "weekday_avg_per_day": weekday_avg, "ratio": ratio}}
+
+    elif group_by == "day_of_month":
+        day_buckets: dict[int, dict[str, Any]] = {d: {"total": 0.0, "count": 0} for d in range(1, 32)}
+        for row in rows:
+            d = row["date"].day
+            day_buckets[d]["total"] += abs(row["amount"])
+            day_buckets[d]["count"] += 1
+        result_buckets = [
+            {"label": f"Ngày {d}", "total": round(day_buckets[d]["total"], 2), "transaction_count": day_buckets[d]["count"], "avg_per_day": round(day_buckets[d]["total"], 2)}
+            for d in range(1, 32) if day_buckets[d]["count"] > 0
+        ]
+        extra = {}
+
+    else:  # week_of_month
+        week_names = ["Tuần 1 (1-7)", "Tuần 2 (8-14)", "Tuần 3 (15-21)", "Tuần 4 (22+)"]
+        week_buckets: dict[str, dict[str, Any]] = {w: {"total": 0.0, "count": 0} for w in week_names}
+        for row in rows:
+            d = row["date"].day
+            if d <= 7:
+                w = week_names[0]
+            elif d <= 14:
+                w = week_names[1]
+            elif d <= 21:
+                w = week_names[2]
+            else:
+                w = week_names[3]
+            week_buckets[w]["total"] += abs(row["amount"])
+            week_buckets[w]["count"] += 1
+        result_buckets = [{"label": w, "total": round(week_buckets[w]["total"], 2), "transaction_count": week_buckets[w]["count"], "avg_per_day": round(week_buckets[w]["total"] / 7, 2)} for w in week_names]
+        extra = {}
+
+    peak = max(result_buckets, key=lambda b: b["total"], default=None) if result_buckets else None
+    return {
+        "scope": _scope(scope),
+        "period": _period_payload(period),
+        "group_by": group_by,
+        "buckets": result_buckets,
+        "peak": {"label": peak["label"], "total": peak["total"]} if peak else None,
+        **extra,
+        "limitations": [LIMITATION] if rows else ["Khong co du lieu giao dich de phan tich.", LIMITATION],
     }
 
 
@@ -456,33 +781,103 @@ def _aggregate_period(rows: list[dict[str, Any]], period: tuple[date, date]) -> 
 
 def _deltas(current: Counter[str], previous: Counter[str], *, key_name: str) -> list[dict[str, Any]]:
     keys = set(current) | set(previous)
-    rows = [
-        {
+    rows = []
+    for key in keys:
+        a_val = round(_as_float(current.get(key)), 2)
+        b_val = round(_as_float(previous.get(key)), 2)
+        delta = round(a_val - b_val, 2)
+        pct, pct_label = _pct_delta_with_label(a_val, b_val)
+        rows.append({
             key_name: key,
-            "period_a_amount": round(_as_float(current.get(key)), 2),
-            "period_b_amount": round(_as_float(previous.get(key)), 2),
-            "delta": round(_as_float(current.get(key)) - _as_float(previous.get(key)), 2),
-            "delta_pct": _pct_delta(_as_float(current.get(key)), _as_float(previous.get(key))),
-        }
-        for key in keys
-    ]
+            "period_a_amount": a_val,
+            "period_b_amount": b_val,
+            "delta": delta,
+            "delta_pct": pct,
+            "delta_pct_label": pct_label,
+        })
     rows.sort(key=lambda item: abs(_as_float(item["delta"])), reverse=True)
     return rows[:5]
 
 
-def _comparison_periods(a_from: str, a_to: str, b_from: str, b_to: str) -> tuple[tuple[date, date], tuple[date, date]]:
+def _is_partial_period(period_a_start: date, period_a_end: date, today: date) -> bool:
+    """
+    Partial nếu period_a chưa kết thúc tự nhiên — tức end_date
+    nằm trong tháng hiện tại hoặc sau today.
+    Full month đã qua (end <= first of current month) không phải partial.
+    """
+    current_month_start = today.replace(day=1)
+    return period_a_end > current_month_start and period_a_end <= today
+
+
+def _comparison_periods(
+    a_from: str,
+    a_to: str,
+    b_from: str,
+    b_to: str,
+    force_no_align: bool = False,
+) -> ComparisonPeriods:
+    today = get_today_in_user_timezone()
+    
     if a_from and a_to and b_from and b_to:
-        return (_parse_date(a_from), _parse_date(a_to)), (_parse_date(b_from), _parse_date(b_to))
-    today = date.today()
-    current_start = today.replace(day=1)
-    next_month = _add_months(current_start, 1)
-    previous_start = _add_months(current_start, -1)
-    return (current_start, next_month), (previous_start, current_start)
+        p_a = (_parse_date(a_from), _parse_date(a_to))
+        p_b = (_parse_date(b_from), _parse_date(b_to))
+    else:
+        # Default MTD
+        current_month_start = today.replace(day=1)
+        period_a_start = current_month_start
+        period_a_end = today + timedelta(days=1)  # exclusive
+
+        previous_month_start = (current_month_start - timedelta(days=1)).replace(day=1)
+        period_b_start = previous_month_start
+        period_b_end = previous_month_start + (period_a_end - period_a_start)  # MTD aligned
+        p_a = (period_a_start, period_a_end)
+        p_b = (period_b_start, period_b_end)
+
+    # Chronological sorting
+    was_swapped = False
+    if p_a[0] < p_b[0]:
+        p_a, p_b = p_b, p_a
+        was_swapped = True
+
+    was_aligned = False
+    limitations = []
+    
+    period_a_start = p_a[0]
+    period_a_end = p_a[1]
+    period_b_start = p_b[0]
+    period_b_end = p_b[1]
+    
+    should_align = (
+        not force_no_align
+        and _is_partial_period(period_a_start, period_a_end, today)
+        and period_b_end > period_b_start
+        and (period_a_end - period_a_start).days <= 31
+    )
+    
+    if should_align:
+        period_a_days = (period_a_end - period_a_start).days
+        period_b_end_aligned = period_b_start + timedelta(days=period_a_days)
+        
+        if period_b_end_aligned > period_b_end:
+            limitations.append("period_b shorter than period_a, comparison may be skewed")
+        else:
+            period_b_end = period_b_end_aligned
+            was_aligned = True
+
+    return ComparisonPeriods(
+        period_a_start=period_a_start,
+        period_a_end=period_a_end,
+        period_b_start=period_b_start,
+        period_b_end=period_b_end,
+        was_swapped=was_swapped,
+        was_aligned=was_aligned,
+        limitations=limitations,
+    )
 
 
 def _period_for_scope(scope: str) -> tuple[date, date]:
     normalized = _scope(scope)
-    today = date.today()
+    today = get_today_in_user_timezone()
     if normalized == "90d":
         return today - timedelta(days=90), today + timedelta(days=1)
     if normalized == "ytd":
@@ -569,6 +964,21 @@ def _pct_delta(current: float, previous: float) -> float | None:
     return round((current - previous) / previous * 100, 1)
 
 
+def _pct_delta_with_label(a_val: float, b_val: float) -> tuple[float | None, str]:
+    a_val = _as_float(a_val)
+    b_val = _as_float(b_val)
+    if b_val == 0.0 and a_val > 0.0:
+        return None, "new_spending"
+    elif a_val == 0.0 and b_val > 0.0:
+        return -100.0, "stopped_spending"
+    elif a_val == 0.0 and b_val == 0.0:
+        return None, "no_activity"
+    else:
+        if b_val == 0.0:
+            return None, "normal"
+        return round((a_val - b_val) / b_val * 100, 1), "normal"
+
+
 def _scope(value: str) -> str:
     normalized = str(value or "cycle").strip().lower()
     return normalized if normalized in {"cycle", "90d", "ytd"} else "cycle"
@@ -576,7 +986,7 @@ def _scope(value: str) -> str:
 
 def _parse_date_or_today(value: str) -> date:
     if not str(value or "").strip():
-        return date.today()
+        return get_today_in_user_timezone()
     return _parse_date(value)
 
 

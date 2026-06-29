@@ -53,3 +53,48 @@ def test_supervisor_routes_monthly_cashflow_summary_to_account_summary(monkeypat
     assert "46 giao dịch" in response.answer
     assert "1,250,000 VND" in response.answer
     assert "3,000,000 VND" in response.answer
+
+
+def test_recent_months_window_covers_n_calendar_months():
+    window = ChatSupervisor._recent_months_window(6, today=date(2026, 6, 27))
+    # Jan..Jun 2026 inclusive -> date_to is exclusive first-of-next-month.
+    assert window == {"date_from": "2026-01-01", "date_to": "2026-07-01"}
+
+
+def test_parse_recent_months_ignores_specific_month_reference():
+    assert ChatSupervisor._parse_recent_months("trung binh chi tieu 6 thang gan day") == 6
+    assert ChatSupervisor._parse_recent_months("chi tieu thang 6") is None
+
+
+def test_supervisor_routes_average_spending_to_account_summary(monkeypatch):
+    captured = {}
+
+    async def fake_execute(self, tool_name, arguments=None, **kwargs):
+        captured.update({"tool_name": tool_name, "arguments": arguments or {}})
+        return ToolExecutionResult(
+            tool_name=tool_name,
+            status="success",
+            data={
+                "total_spent": 7_517_622.68,
+                "total_income": 14_891_064.41,
+                "currency": "VND",
+                "has_data": True,
+            },
+        )
+
+    monkeypatch.setattr(ToolExecutor, "execute", fake_execute)
+
+    response = asyncio.run(
+        ChatSupervisor(_request(), "user-1").respond(
+            ChatRequest(message="Trung bình chi tiêu 6 tháng gần đây là bao nhiêu")
+        )
+    )
+
+    assert response.intent == "SPENDING_BREAKDOWN"
+    assert captured["tool_name"] == "get_account_summary"
+    # A real 6-month window must be passed, not an overlapping comparison.
+    assert captured["arguments"]["date_from"]
+    assert captured["arguments"]["date_to"]
+    # 7,517,622.68 / 6 ≈ 1,252,937 VND per month.
+    assert "1,252,937 VND" in response.answer
+    assert "trung bình" in response.answer.lower()

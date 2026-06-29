@@ -1,0 +1,127 @@
+[
+  {
+    "id": "Q01",
+    "group": "Deterministic / fast-path",
+    "question": "Tháng này tôi chi tiêu bao nhiêu?",
+    "expect_tool": "get_account_summary",
+    "expect_no_error": true
+  },
+  {
+    "id": "Q02",
+    "group": "Deterministic / fast-path",
+    "question": "Liệt kê các mục chi tiêu nhiều nhất tháng này",
+    "expect_tool": "get_account_summary",
+    "expect_no_error": true
+  },
+  {
+    "id": "Q03",
+    "group": "Deterministic / fast-path",
+    "question": "Trung bình chi tiêu 3 tháng gần đây là bao nhiêu?",
+    "expect_tool": "get_account_summary",
+    "expect_no_error": true,
+    "note": "Phải dùng average route, chia đúng cho 3 tháng"
+  },
+  {
+    "id": "Q04",
+    "group": "Deterministic / fast-path",
+    "question": "So sánh chi tiêu tháng này với tháng trước",
+    "expect_tool": "compare_period_spending",
+    "expect_no_error": true
+  },
+  {
+    "id": "Q05",
+    "group": "Forecast & health",
+    "question": "Cuối tháng tôi còn khoảng bao nhiêu tiền?",
+    "expect_tool": "get_balance_forecast",
+    "expect_no_error": true
+  },
+  {
+    "id": "Q06",
+    "group": "Forecast & health",
+    "question": "Tài chính của tôi có ổn không?",
+    "expect_tool": "get_financial_health_score",
+    "expect_no_error": true
+  },
+  {
+    "id": "Q07",
+    "group": "Forecast & health",
+    "question": "Có khoản chi tiêu nào bất thường không?",
+    "expect_tool": "get_anomalies",
+    "expect_no_error": true
+  },
+  {
+    "id": "Q08",
+    "group": "Budget",
+    "question": "Tôi có đang vượt ngân sách không?",
+    "expect_tool": "get_budget_status",
+    "expect_no_error": true
+  },
+  {
+    "id": "Q09",
+    "group": "Budget",
+    "question": "Lên kế hoạch chi tiêu cho từng mục với lương 8 triệu tháng sau",
+    "expect_tool": "recommend_budget_plan",
+    "expect_no_error": true,
+    "note": "monthly_income phải = 8000000, không nhầm với target_savings"
+  },
+  {
+    "id": "Q10",
+    "group": "Savings goals",
+    "question": "Tôi đang có mục tiêu tiết kiệm nào?",
+    "expect_tool": "get_savings_goals",
+    "expect_no_error": true
+  },
+  {
+    "id": "Q11",
+    "group": "Savings goals",
+    "question": "Tôi muốn tiết kiệm 20 triệu trong 6 tháng, có khả thi không?",
+    "expect_tool": "plan_savings_goal",
+    "expect_no_error": true
+  },
+  {
+    "id": "Q12",
+    "group": "Multi-intent",
+    "question": "6 tháng gần nhất tôi chi tiêu bao nhiêu và tài chính của tôi hiện tại có ổn không?",
+    "expect_tool": ["get_account_summary", "get_financial_health_score"],
+    "expect_no_error": true,
+    "note": "Phải gọi 2 tools, tổng hợp 2 ý"
+  },
+  {
+    "id": "Q13",
+    "group": "Multi-intent",
+    "question": "Tháng này tôi tiêu nhiều nhất vào đâu và cuối tháng tôi còn lại bao nhiêu?",
+    "expect_tool": ["get_account_summary", "get_balance_forecast"],
+    "expect_no_error": true,
+    "note": "Multi-intent: spending breakdown + forecast"
+  },
+  {
+    "id": "Q14",
+    "group": "Write / confirmation flow",
+    "question": "Hủy mục tiêu tiết kiệm của tôi",
+    "expect_confirmation": true,
+    "expect_no_error": true,
+    "note": "Phải tạo 2-step plan: get_savings_goals rồi archive_savings_goal với ID thật"
+  },
+  {
+    "id": "Q15",
+    "group": "No-tool / general knowledge",
+    "question": "Nguyên tắc 50/30/20 là gì?",
+    "expect_tool": null,
+    "expect_no_error": true,
+    "note": "Trả lời từ kiến thức chung, không cần tool"
+  },
+  {
+    "id": "Q16",
+    "group": "No-tool / general knowledge",
+    "question": "Quỹ khẩn cấp nên bằng mấy tháng chi tiêu?",
+    "expect_tool": null,
+    "expect_no_error": true
+  },
+  {
+    "id": "Q17",
+    "group": "Out of scope guard",
+    "question": "Tôi nên mua cổ phiếu nào tốt nhất hiện nay?",
+    "expect_blocked": true,
+    "note": "InvestmentAdvice guard phải chặn"
+  }
+]
